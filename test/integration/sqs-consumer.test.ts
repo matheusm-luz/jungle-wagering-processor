@@ -196,6 +196,7 @@ describe('SQS consumer: ack after commit (R-52, R-53, R-54)', () => {
 
   test('an INSUFFICIENT_FUNDS rejection is acked, not retried', async () => {
     const target = await wallet('10.00');
+    const retriesBefore = app.metricValue('sqs_message_retries');
     const data = bet(target);
     const messageId = await send(data);
 
@@ -207,7 +208,22 @@ describe('SQS consumer: ack after commit (R-52, R-53, R-54)', () => {
        where external_transaction_id = ${data.externalTransactionId as string}`;
     expect(transaction).toEqual({ status: 'REJECTED', failure_code: 'INSUFFICIENT_FUNDS' });
     expect(await walletState(target.id)).toEqual({ balance: '10.00', transactions: 1 });
-    expect(deadLetters.has(messageId)).toBe(false);
+    // Acked on its first receive (S9 review, m2).
+    expect(app.metricValue('sqs_message_retries')).toBe(retriesBefore);
+  });
+
+  test('an occurredAt with a UTC offset instead of Z is accepted (S9 review, m7)', async () => {
+    const target = await wallet();
+    const messageId = `msg-${newId()}`;
+    const envelope = {
+      ...wagerMessage(bet(target), messageId),
+      occurredAt: '2026-11-13T15:00:00.000-03:00',
+    };
+    await queues.sendRaw(JSON.stringify(envelope), { groupId: target.id });
+
+    await waitFor(() => inboxRow(messageId));
+    await drained();
+    expect(await walletState(target.id)).toEqual({ balance: '70.00', transactions: 1 });
   });
 
   test('a message for an unknown wallet is acked with its inbox row (L-08)', async () => {
@@ -227,7 +243,7 @@ describe('SQS consumer: ack after commit (R-52, R-53, R-54)', () => {
 });
 
 describe('SQS consumer: transient failures (R-55)', () => {
-  test('a wallet locked past the lock timeout is retried with backoff and reaches the DLQ after 5 receives, with no effect', async () => {
+  test('a wallet locked past the lock timeout is retried and reaches the DLQ after 5 receives, with no effect', async () => {
     const target = await wallet();
     const release = await holdWallet(target.id);
     const retriesBefore = app.metricValue('sqs_message_retries');
@@ -262,6 +278,55 @@ describe('SQS consumer: transient failures (R-55)', () => {
     await waitFor(() => inboxRow(messageId));
     await drained();
     expect(await walletState(target.id)).toEqual({ balance: '70.00', transactions: 1 });
+  });
+});
+
+describe('SQS consumer: visibility backoff (R-55, S9 review m4)', () => {
+  test('each retry stays invisible twice as long as the previous one, up to the cap', async () => {
+    // Its own queue and instance: the suite's instance retries at once.
+    const own = await createTestQueues('s9-backoff');
+    const slow = await startApp({
+      ...own.env,
+      SQS_CONSUMER_CONCURRENCY: 1,
+      SQS_WAIT_TIME_S: 1,
+      SQS_VISIBILITY_TIMEOUT_S: 5,
+      SQS_RETRY_BASE_DELAY_S: 1,
+      SQS_RETRY_MAX_DELAY_S: 2,
+      DATABASE_LOCK_TIMEOUT_MS: 100,
+    });
+    const target = await wallet();
+    const release = await holdWallet(target.id);
+    const messageId = `msg-${newId()}`;
+    const retries = () =>
+      slow
+        .logs()
+        .filter(
+          (line) => line.message === 'sqs message failed, retrying' && line.messageId === messageId,
+        );
+    try {
+      await own.sendRaw(JSON.stringify(wagerMessage(bet(target), messageId)), {
+        groupId: target.id,
+      });
+      await waitFor(async () => (retries().length >= 3 ? true : undefined), 15_000);
+      await release();
+
+      expect(
+        retries()
+          .slice(0, 3)
+          .map(({ receiveCount, retryInSeconds }) => ({ receiveCount, retryInSeconds })),
+      ).toEqual([
+        { receiveCount: 1, retryInSeconds: 1 },
+        { receiveCount: 2, retryInSeconds: 2 },
+        { receiveCount: 3, retryInSeconds: 2 },
+      ]);
+      await waitFor(() => inboxRow(messageId), 10_000);
+      await waitFor(async () => ((await own.depth(own.url)) === 0 ? true : undefined));
+      expect(await walletState(target.id)).toEqual({ balance: '70.00', transactions: 1 });
+    } finally {
+      await release();
+      await slow.close();
+      await own.remove();
+    }
   });
 });
 

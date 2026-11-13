@@ -41,7 +41,8 @@ export const CONSUMER_NAME = 'wager-transactions';
 const envelopeSchema = z.strictObject({
   messageId: identifierSchema,
   type: z.literal('WagerTransactionRequested'),
-  occurredAt: z.iso.datetime(),
+  // Any ISO-8601 instant, with `Z` or an offset (S9 review, m7).
+  occurredAt: z.iso.datetime({ offset: true }),
   data: wagerSchema.extend({ idempotencyKey: idempotencyKeySchema }),
 });
 
@@ -93,13 +94,22 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
   async beforeApplicationShutdown(): Promise<void> {
     this.stopping = true;
     this.stop.abort();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const grace = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, this.env.SQS_SHUTDOWN_GRACE_MS);
-    });
-    const pending = [...this.receiving, ...this.inFlight.values()];
-    await Promise.race([Promise.allSettled(pending), grace]);
-    clearTimeout(timer);
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const after = (ms: number) =>
+      new Promise<void>((resolve) => timers.push(setTimeout(resolve, ms)));
+    await Promise.all([
+      // Not cut by the grace period (S9 review, m5): a poll left behind would strand its message.
+      // It ends within SQS_WAIT_TIME_S; the margin only guards against a broker that hangs.
+      Promise.race([
+        Promise.allSettled([...this.receiving]),
+        after(this.env.SQS_WAIT_TIME_S * 1000 + 5000),
+      ]),
+      Promise.race([
+        Promise.allSettled([...this.inFlight.values()]),
+        after(this.env.SQS_SHUTDOWN_GRACE_MS),
+      ]),
+    ]);
+    for (const timer of timers) clearTimeout(timer);
 
     const unfinished = [...this.inFlight.keys()];
     if (unfinished.length > 0) {

@@ -63,7 +63,15 @@ describe('inbox (R-53)', () => {
     });
     await Bun.sleep(50);
     const second = unitOfWork.run((scope) => scope.inbox.record(same));
-    await Bun.sleep(100);
+    // The second insert is blocked on the primary key before the first commits (S9 review, m3).
+    for (let waited = 0; ; waited += 10) {
+      const [row] = await sql`
+        select count(*)::int as n from pg_stat_activity
+         where wait_event_type = 'Lock' and query like 'insert into inbox_messages%'`;
+      if ((row?.n as number) > 0) break;
+      if (waited > 5000) throw new Error('the second insert never waited');
+      await Bun.sleep(10);
+    }
     release();
 
     expect([await first, await second]).toEqual(['new', 'duplicate']);

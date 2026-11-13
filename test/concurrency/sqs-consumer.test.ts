@@ -152,7 +152,12 @@ describe('SQS consumer across processes', () => {
       await sendBet(target);
       await someoneWaitsForALock();
       process.kill(app.pids[0] as number, 'SIGTERM');
-      await Bun.sleep(300);
+      // Still alive a second after SIGTERM: the shutdown is waiting for the message (S9 review, m6).
+      const first = await Promise.race([
+        app.exited[0]?.then(() => 'exited'),
+        Bun.sleep(1000).then(() => 'alive'),
+      ]);
+      expect(first).toBe('alive');
     } finally {
       await release();
     }
@@ -170,6 +175,10 @@ describe('SQS consumer across processes', () => {
         SQS_SHUTDOWN_GRACE_MS: '300',
         SQS_VISIBILITY_TIMEOUT_S: '60',
         DATABASE_LOCK_TIMEOUT_MS: '3000',
+        // When the lock timeout fails the stuck message, its retry must not make it visible in
+        // time: only the shutdown path may (S9 review, M1).
+        SQS_RETRY_BASE_DELAY_S: '60',
+        SQS_RETRY_MAX_DELAY_S: '60',
       }),
     );
     const release = await holdWallet(target.id);

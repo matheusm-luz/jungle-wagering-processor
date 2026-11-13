@@ -10,7 +10,14 @@ let sql: SQL;
 
 beforeAll(async () => {
   sql = await migratedDatabase();
-  processes = await startProcesses(3);
+  // The pending-reference worker of every process runs at test speed (R-70); nothing else waits.
+  processes = await startProcesses(3, {
+    PENDING_REFERENCE_BASE_DELAY_MS: '50',
+    PENDING_REFERENCE_MAX_DELAY_MS: '200',
+    PENDING_REFERENCE_MAX_ATTEMPTS: '100',
+    PENDING_REFERENCE_POLL_INTERVAL_MS: '20',
+    PENDING_REFERENCE_BATCH_SIZE: '50',
+  });
 }, 30_000);
 
 afterAll(async () => {
@@ -341,3 +348,66 @@ async function waitForSessionBlockedBy(holder: number): Promise<void> {
     await Bun.sleep(10);
   }
 }
+
+describe('references delivered late, across processes (S7, R-70)', () => {
+  test('REFUNDs and ROLLBACKs sent before their BETs across three processes are applied exactly once after the BETs arrive', async () => {
+    const wallets = await Promise.all(Array.from({ length: 10 }, (_, i) => openWallet(via(i))));
+    const scenarios = wallets.map((wallet) => {
+      const refunded = bet(wallet, '30.00');
+      const rolledBack = bet(wallet, '20.00');
+      return {
+        wallet,
+        bets: [refunded, rolledBack],
+        // Three REFUNDs of one BET under different ids, one per process: only one may apply.
+        reversals: [
+          reversal(refunded, 'REFUND'),
+          reversal(refunded, 'REFUND'),
+          reversal(refunded, 'REFUND'),
+          reversal(rolledBack, 'ROLLBACK'),
+        ],
+      };
+    });
+
+    const early = await Promise.all(
+      scenarios.flatMap(({ reversals }) => reversals.map((body, i) => submit(via(i), body))),
+    );
+    expect(early.every((a) => a.status === 202 && a.body.status === 'PENDING_REFERENCE')).toBe(
+      true,
+    );
+    const placed = await Promise.all(
+      scenarios.flatMap(({ bets }) => bets.map((body, i) => submit(via(i + 1), body))),
+    );
+    expect(placed.every((a) => a.status === 200)).toBe(true);
+
+    const ids = wallets.map(({ id }) => id);
+    const deadline = performance.now() + 20_000;
+    for (;;) {
+      const [{ waiting }] = await sql`
+        select count(*)::int as waiting from wager_transactions
+         where wallet_id in ${sql(ids)} and status = 'PENDING_REFERENCE'`;
+      if (waiting === 0) break;
+      if (performance.now() > deadline) throw new Error(`${waiting} rows still waiting`);
+      await Bun.sleep(20);
+    }
+
+    for (const { wallet } of scenarios) {
+      const outcomes = await sql`
+        select kind, status, failure_code, count(*)::int as count from wager_transactions
+         where wallet_id = ${wallet.id} and kind in ('REFUND', 'ROLLBACK')
+         group by kind, status, failure_code order by kind, status`;
+      expect(outcomes).toEqual([
+        { kind: 'REFUND', status: 'PROCESSED', failure_code: null, count: 1 },
+        {
+          kind: 'REFUND',
+          status: 'REJECTED',
+          failure_code: 'REFERENCE_ALREADY_REVERSED',
+          count: 2,
+        },
+        { kind: 'ROLLBACK', status: 'PROCESSED', failure_code: null, count: 1 },
+      ]);
+      // 100 − 30 − 20 + 30 + 20; opening, two BETs, one REFUND, one ROLLBACK.
+      expect(await walletState(wallet.id)).toMatchObject({ balance: '100.00', version: 5 });
+      expect(await reversalsOf(wallet.id)).toEqual({ processed: 2, credits: 3 });
+    }
+  }, 40_000);
+});

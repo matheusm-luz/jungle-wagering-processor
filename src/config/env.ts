@@ -13,6 +13,12 @@ const schema = z.object({
   AWS_ENDPOINT_URL: z.url().optional(),
   WAGER_TRANSACTIONS_QUEUE_NAME: z.string().min(1).default('wager-transactions.fifo'),
   READINESS_TIMEOUT_MS: z.coerce.number().int().min(1).default(2000),
+  // Pending-reference worker (ADR-05). Tests shrink the delays to milliseconds.
+  PENDING_REFERENCE_BASE_DELAY_MS: z.coerce.number().int().min(1).default(1000),
+  PENDING_REFERENCE_MAX_DELAY_MS: z.coerce.number().int().min(1).default(60_000),
+  PENDING_REFERENCE_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(10),
+  PENDING_REFERENCE_POLL_INTERVAL_MS: z.coerce.number().int().min(1).default(500),
+  PENDING_REFERENCE_BATCH_SIZE: z.coerce.number().int().min(1).default(10),
 });
 
 export type Env = Readonly<z.infer<typeof schema>>;

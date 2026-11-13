@@ -16,7 +16,34 @@ describe('loadEnv', () => {
       AWS_ENDPOINT_URL: undefined,
       WAGER_TRANSACTIONS_QUEUE_NAME: 'wager-transactions.fifo',
       READINESS_TIMEOUT_MS: 2000,
+      PENDING_REFERENCE_BASE_DELAY_MS: 1000,
+      PENDING_REFERENCE_MAX_DELAY_MS: 60_000,
+      PENDING_REFERENCE_MAX_ATTEMPTS: 10,
+      PENDING_REFERENCE_POLL_INTERVAL_MS: 500,
+      PENDING_REFERENCE_BATCH_SIZE: 10,
     });
+  });
+
+  test('reads the pending-reference worker settings (ADR-05)', () => {
+    const env = loadEnv({
+      DATABASE_URL,
+      PENDING_REFERENCE_BASE_DELAY_MS: '5',
+      PENDING_REFERENCE_MAX_DELAY_MS: '40',
+      PENDING_REFERENCE_MAX_ATTEMPTS: '3',
+      PENDING_REFERENCE_POLL_INTERVAL_MS: '20',
+      PENDING_REFERENCE_BATCH_SIZE: '2',
+    });
+
+    expect(env).toMatchObject({
+      PENDING_REFERENCE_BASE_DELAY_MS: 5,
+      PENDING_REFERENCE_MAX_DELAY_MS: 40,
+      PENDING_REFERENCE_MAX_ATTEMPTS: 3,
+      PENDING_REFERENCE_POLL_INTERVAL_MS: 20,
+      PENDING_REFERENCE_BATCH_SIZE: 2,
+    });
+    expect(() => loadEnv({ DATABASE_URL, PENDING_REFERENCE_MAX_ATTEMPTS: '0' })).toThrow(
+      EnvValidationError,
+    );
   });
 
   test('reads every variable from the source', () => {

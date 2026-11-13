@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { InvalidIntegrationEventError } from '../../../src/domain/errors';
 import { IntegrationEvent } from '../../../src/domain/events/integration-event';
+import { WagerTransactionPendingReference } from '../../../src/domain/events/wager-transaction-pending-reference';
 import { WagerTransactionProcessed } from '../../../src/domain/events/wager-transaction-processed';
 import { WagerTransactionRejected } from '../../../src/domain/events/wager-transaction-rejected';
 import { WalletBalanceChanged } from '../../../src/domain/events/wallet-balance-changed';
@@ -272,3 +273,66 @@ function processedBet(): WagerTransaction {
   transaction.markProcessed(undefined, brl('975.00'), AT);
   return transaction;
 }
+
+describe('WagerTransactionPendingReference', () => {
+  function waitingRefund(): WagerTransaction {
+    const refund = WagerTransaction.create({
+      ...betProps(),
+      kind: WagerTransactionKind.Refund,
+      referenceExternalTransactionId: 'transaction-later',
+    });
+    refund.markPendingReference(brl('1000.00'));
+    return refund;
+  }
+
+  test('carries the data of WagerTransactionProcessed: declared reference, observed balance, wallet version', () => {
+    const { wallet } = openedWallet();
+
+    const event = WagerTransactionPendingReference.from(
+      waitingRefund(),
+      wallet,
+      context('event-4'),
+    );
+
+    expect(event).toBeInstanceOf(IntegrationEvent);
+    expect(event.toJSON()).toEqual({
+      eventId: 'event-4',
+      eventType: 'WagerTransactionPendingReference',
+      aggregateId: 'wallet-1',
+      correlationId: 'correlation-1',
+      occurredAt: '2026-11-13T12:00:00.000Z',
+      version: 1,
+      data: {
+        transactionId: 'tx-2',
+        providerId: 'provider-a',
+        externalTransactionId: 'transaction-123',
+        walletId: 'wallet-1',
+        playerId: 'player-1',
+        kind: WagerTransactionKind.Refund,
+        money: { amount: '25.00', currency: 'BRL' },
+        referenceExternalTransactionId: 'transaction-later',
+        balance: { amount: '1000.00', currency: 'BRL' },
+        walletVersion: 1,
+      },
+    });
+  });
+
+  test('from refuses a transaction that is not PENDING_REFERENCE or belongs to another wallet', () => {
+    const { wallet } = openedWallet();
+
+    expect(() => WagerTransactionPendingReference.from(processedBet(), wallet, context())).toThrow(
+      InvalidIntegrationEventError,
+    );
+    const { wallet: stranger } = Wallet.open({
+      id: 'wallet-2',
+      playerId: 'player-1',
+      initialBalance: brl('1.00'),
+      openingTransactionId: 'tx-9',
+      openingEntryId: 'entry-9',
+      at: AT,
+    });
+    expect(() =>
+      WagerTransactionPendingReference.from(waitingRefund(), stranger, context()),
+    ).toThrow(InvalidIntegrationEventError);
+  });
+});

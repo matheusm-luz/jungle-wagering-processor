@@ -12,11 +12,19 @@ export interface TestApp {
 
 /**
  * Boots the real application, through the same `createApp` as `main.ts`, against the PostgreSQL
- * and LocalStack containers of the suite. `overrides` replaces single environment values.
+ * and LocalStack containers of the suite. `overrides` replaces single environment values; pass a
+ * `PENDING_REFERENCE_POLL_INTERVAL_MS` to run the pending-reference worker.
  */
 export async function startApp(overrides: Partial<Env> = {}): Promise<TestApp> {
   const lines: string[] = [];
-  const env: Env = { ...loadEnv(process.env), LOG_LEVEL: 'debug', ...overrides };
+  const env: Env = {
+    ...loadEnv(process.env),
+    LOG_LEVEL: 'debug',
+    // The pending-reference worker idles unless a test turns it on: the suite database is shared,
+    // and a worker retrying rows of other suites would make timings depend on them (S7 review, m6).
+    PENDING_REFERENCE_POLL_INTERVAL_MS: 1_000_000_000,
+    ...overrides,
+  };
   const app = await createApp(env, { writeLog: (line) => lines.push(line) });
   await app.listen(0, '127.0.0.1');
   const { port } = app.getHttpServer().address() as AddressInfo;

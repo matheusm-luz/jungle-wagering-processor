@@ -52,6 +52,8 @@ export const WagerTransactionRecord = defineEntity({
     // Bookkeeping of the pending-reference worker (S7); the domain does not model it.
     referenceAttempts: p.integer(),
     nextAttemptAt: p.datetime().columnType('timestamptz').nullable(),
+    // The creating request's correlation id (L-15), for the events the worker emits later.
+    correlationId: p.text().nullable(),
     createdAt: p.datetime().columnType('timestamptz'),
   },
 });

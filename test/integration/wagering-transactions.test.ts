@@ -819,7 +819,7 @@ describe('POST /wagering/transactions — reversals rejected', () => {
   });
 });
 
-/** 202, nothing moved, and the row waits, due at once for the worker of S7. */
+/** 202, nothing moved, and the row waits, due at once for the pending-reference worker. */
 async function expectWaiting(response: Response, wallet: Wallet, balance: string, version: number) {
   expect(response.status).toBe(202);
   const result = (await response.json()) as Result;
@@ -848,6 +848,31 @@ describe('POST /wagering/transactions — reference not found yet (S6 Q1, L-10)'
 
     expect(replay.status).toBe(202);
     expect(await replay.json()).toEqual({ ...first, idempotentReplay: true });
+  });
+
+  test('a waiting REFUND emits WagerTransactionPendingReference once, with the request correlation id, and no balance event (S7)', async () => {
+    const wallet = await openWallet('100.00');
+    const refund = wager(wallet, 'REFUND', '30.00', { referenceExternalTransactionId: 'tx-later' });
+
+    const response = await submit(refund, undefined, { 'X-Correlation-Id': 'refund-early' });
+    const result = await expectWaiting(response, wallet, '100.00', 1);
+    await submit(refund);
+
+    const events = await eventsOf(result.transactionId);
+    expect(events.map(({ event_type }) => event_type)).toEqual([
+      'WagerTransactionPendingReference',
+    ]);
+    expect(events[0]?.payload).toMatchObject({
+      correlationId: 'refund-early',
+      aggregateId: wallet.id,
+      data: {
+        transactionId: result.transactionId,
+        kind: 'REFUND',
+        referenceExternalTransactionId: 'tx-later',
+        balance: { amount: '100.00', currency: 'BRL' },
+        walletVersion: 1,
+      },
+    });
   });
 
   test('a ROLLBACK of a REFUND that is still PENDING_REFERENCE waits too', async () => {

@@ -9,11 +9,13 @@ import {
 import type { TransactionScope } from '../../src/application/ports';
 import { WagerTransactionProcessed } from '../../src/domain/events/wager-transaction-processed';
 import { WalletBalanceChanged } from '../../src/domain/events/wallet-balance-changed';
+import { FailureCode } from '../../src/domain/failure-code';
 import { Money } from '../../src/domain/money';
 import {
   type CreateWagerTransactionProps,
   WagerTransaction,
   WagerTransactionKind,
+  WagerTransactionStatus,
 } from '../../src/domain/wager-transaction';
 import { Wallet } from '../../src/domain/wallet';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
@@ -85,7 +87,7 @@ function opening(
 
   const write = async (scope: TransactionScope) => {
     await scope.wallets.insert(wallet);
-    await scope.transactions.insert(transaction);
+    await scope.transactions.insert(transaction, 'correlation-1');
     await scope.ledger.append(openingEntry, transaction.counterparty());
     await scope.outbox.enqueue(events);
   };
@@ -241,7 +243,7 @@ function bet(
     const lockedVersion = wallet.version;
     const entry = wallet.debit({ entryId: newId(), transactionId: id, money, at: AT });
     transaction.markProcessed(undefined, wallet.balance, AT);
-    await scope.transactions.insert(transaction);
+    await scope.transactions.insert(transaction, 'correlation-1');
     await scope.ledger.append(entry, transaction.counterparty());
     await scope.wallets.update(wallet, expectedVersion ?? lockedVersion);
   };
@@ -447,5 +449,142 @@ describe('TransactionScope reference reads (S6)', () => {
     expect(await has(win.id)).toBe(true);
     await reverse(bet, {});
     expect(await has(bet.id)).toBe(true);
+  });
+});
+
+/** A `REFUND` of a reference that does not exist, written the way the request path writes it. */
+async function waitingRefund(walletId: string, createdAt: Date) {
+  const id = newId();
+  return unitOfWork.run(async (scope) => {
+    const wallet = await scope.wallets.lock(walletId);
+    if (wallet === undefined) throw new Error('expected the wallet');
+    const transaction = WagerTransaction.create({
+      id,
+      providerId: 'provider-uow',
+      externalTransactionId: `refund-${id}`,
+      idempotencyKey: `provider-uow:refund-${id}`,
+      payloadHash: 'f'.repeat(64),
+      walletId,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Refund,
+      money: Money.from({ amount: '10.00', currency: wallet.currency }),
+      referenceExternalTransactionId: `missing-${id}`,
+      createdAt,
+    });
+    transaction.markPendingReference(wallet.balance);
+    await scope.transactions.insert(transaction, `correlation-${id}`);
+    return transaction;
+  });
+}
+
+/**
+ * Ends rows these tests leave waiting. They are due in the distant past, so a worker of a later
+ * suite would otherwise retry them before its own rows (S7 review, m6).
+ */
+async function retire(...transactions: WagerTransaction[]) {
+  for (const transaction of transactions) {
+    transaction.reject(FailureCode.ReferenceNotFound, transaction.observedBalance as Money);
+    await unitOfWork.run((scope) => scope.transactions.finish(transaction, 0));
+  }
+}
+
+async function scheduleOf(id: string) {
+  const [row] = await sql`
+    select status, failure_code, reference_attempts, next_attempt_at, correlation_id
+      from wager_transactions where id = ${id}`;
+  return row;
+}
+
+describe('TransactionScope pending references (S7)', () => {
+  // Far in the past and earlier on every run, so no row left by an earlier run, another test or
+  // another suite is due at the instants findDuePending is asked about.
+  const EPOCH = Date.parse('2001-01-01T00:00:00.000Z') - Date.now();
+  const LATER = 1e9;
+  const at = (ms: number) => new Date(EPOCH + ms);
+
+  test('findDuePending returns due PENDING_REFERENCE rows oldest first, up to the limit', async () => {
+    const { wallet } = await seedWallet(sql, '100.00');
+    const walletId = wallet.id as string;
+    const late = await waitingRefund(walletId, at(30));
+    const early = await waitingRefund(walletId, at(10));
+    const middle = await waitingRefund(walletId, at(20));
+    const notDue = await waitingRefund(walletId, at(5000));
+    const found = (transaction: WagerTransaction) => ({
+      id: transaction.id,
+      walletId,
+      providerId: 'provider-uow',
+      correlationId: `correlation-${transaction.id}`,
+    });
+
+    const due = (now: Date, limit: number) =>
+      unitOfWork.run((scope) => scope.transactions.findDuePending(now, limit));
+
+    // Rows of other tests are due long after EPOCH; only these four can match.
+    expect((await due(at(30), 10)).map(({ id }) => id)).toHaveLength(3);
+    expect(await due(at(30), 2)).toEqual([found(early), found(middle)]);
+    expect((await due(at(30), 10)).at(-1)).toEqual(found(late));
+    await retire(late, early, middle, notDue);
+  });
+
+  test('loadPending returns the row with its attempts and correlation id, and undefined once terminal', async () => {
+    const { wallet } = await seedWallet(sql, '100.00');
+    const refund = await waitingRefund(wallet.id as string, at(LATER));
+
+    const pending = await unitOfWork.run((scope) => scope.transactions.loadPending(refund.id));
+
+    expect(pending).toEqual({
+      transaction: expect.objectContaining({ id: refund.id }),
+      attempts: 0,
+      nextAttemptAt: at(LATER),
+      correlationId: `correlation-${refund.id}`,
+    });
+    expect(pending?.transaction.status).toBe(WagerTransactionStatus.PendingReference);
+
+    const settled = pending?.transaction as WagerTransaction;
+    settled.reject(FailureCode.ReferenceNotFound, settled.observedBalance as Money);
+    await unitOfWork.run((scope) => scope.transactions.finish(settled, 10));
+    expect(
+      await unitOfWork.run((scope) => scope.transactions.loadPending(refund.id)),
+    ).toBeUndefined();
+  });
+
+  test('reschedule writes the attempts and the next attempt', async () => {
+    const { wallet } = await seedWallet(sql, '100.00');
+    const refund = await waitingRefund(wallet.id as string, at(LATER));
+
+    await unitOfWork.run((scope) => scope.transactions.reschedule(refund.id, 3, at(LATER + 4000)));
+
+    expect(await scheduleOf(refund.id)).toEqual({
+      status: 'PENDING_REFERENCE',
+      failure_code: null,
+      reference_attempts: 3,
+      next_attempt_at: at(LATER + 4000),
+      correlation_id: `correlation-${refund.id}`,
+    });
+    await retire(refund);
+  });
+
+  test('finish writes the terminal state of a waiting row and refuses one that is no longer waiting', async () => {
+    const { wallet } = await seedWallet(sql, '100.00');
+    const refund = await waitingRefund(wallet.id as string, at(LATER));
+    refund.reject(FailureCode.ReferenceNotFound, refund.observedBalance as Money);
+
+    await unitOfWork.run((scope) => scope.transactions.finish(refund, 10));
+
+    expect(await scheduleOf(refund.id)).toEqual({
+      status: 'REJECTED',
+      failure_code: 'REFERENCE_NOT_FOUND',
+      reference_attempts: 10,
+      next_attempt_at: null,
+      correlation_id: `correlation-${refund.id}`,
+    });
+    await expect(unitOfWork.run((scope) => scope.transactions.finish(refund, 10))).rejects.toThrow(
+      'not waiting',
+    );
+    await expect(
+      unitOfWork.run((scope) => scope.transactions.reschedule(refund.id, 11, at(LATER))),
+    ).rejects.toThrow('not waiting');
   });
 });

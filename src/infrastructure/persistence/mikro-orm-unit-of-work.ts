@@ -1,4 +1,4 @@
-import { LockMode, UniqueConstraintViolationException } from '@mikro-orm/core';
+import { type EntityData, LockMode, UniqueConstraintViolationException } from '@mikro-orm/core';
 import { type EntityManager, MikroORM } from '@mikro-orm/postgresql';
 import { Inject, Injectable } from '@nestjs/common';
 import {
@@ -22,6 +22,7 @@ import {
   LedgerEntryRecord,
   OutboxMessageRecord,
   WagerTransactionRecord,
+  type WagerTransactionRow,
   WalletRecord,
 } from './records';
 
@@ -73,6 +74,16 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
    * there is no change set to flush later.
    */
   private scope(em: EntityManager): TransactionScope {
+    // Only a waiting row may change; under the wallet lock a miss is a bug, never a second retry.
+    const updateWaiting = async (id: string, changes: EntityData<WagerTransactionRow>) => {
+      const updated = await em.nativeUpdate(
+        WagerTransactionRecord,
+        { id, status: WagerTransactionStatus.PendingReference },
+        changes,
+      );
+      if (updated !== 1) throw new Error(`wager transaction ${id} is not waiting`);
+    };
+
     return {
       wallets: {
         insert: async (wallet) => {
@@ -97,8 +108,11 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
         },
       },
       transactions: {
-        insert: async (transaction) => {
-          await em.insert(WagerTransactionRecord, toWagerTransactionRecord(transaction));
+        insert: async (transaction, correlationId) => {
+          await em.insert(
+            WagerTransactionRecord,
+            toWagerTransactionRecord(transaction, correlationId),
+          );
         },
         findByIdentity: async ({ idempotencyKey, providerId, externalTransactionId }) => {
           const rows = await em.find(
@@ -124,6 +138,54 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
             status: WagerTransactionStatus.Processed,
           });
           return count > 0;
+        },
+        findDuePending: async (now, limit) => {
+          // Served by the partial index wager_transactions_pending_reference_due.
+          const rows = await em.find(
+            WagerTransactionRecord,
+            { status: WagerTransactionStatus.PendingReference, nextAttemptAt: { $lte: now } },
+            {
+              fields: ['id', 'walletId', 'providerId', 'correlationId'],
+              orderBy: { nextAttemptAt: 'asc', id: 'asc' },
+              limit,
+              disableIdentityMap: true,
+            },
+          );
+          return rows.map(({ id, walletId, providerId, correlationId }) => ({
+            id,
+            walletId,
+            providerId,
+            correlationId: correlationId ?? undefined,
+          }));
+        },
+        loadPending: async (id) => {
+          const row = await em.findOne(
+            WagerTransactionRecord,
+            { id, status: WagerTransactionStatus.PendingReference },
+            { disableIdentityMap: true },
+          );
+          if (row === null || row.nextAttemptAt == null) return undefined;
+          return {
+            transaction: toWagerTransaction(row),
+            attempts: row.referenceAttempts,
+            nextAttemptAt: row.nextAttemptAt,
+            correlationId: row.correlationId ?? undefined,
+          };
+        },
+        reschedule: async (id, attempts, nextAttemptAt) => {
+          await updateWaiting(id, { referenceAttempts: attempts, nextAttemptAt });
+        },
+        finish: async (transaction, attempts) => {
+          await updateWaiting(transaction.id, {
+            status: transaction.status,
+            referenceTransactionId: transaction.referenceTransactionId ?? null,
+            failureCode: transaction.failureCode ?? null,
+            observedBalance: transaction.observedBalance?.amount ?? null,
+            observedCurrency: transaction.observedBalance?.currency ?? null,
+            processedAt: transaction.processedAt ?? null,
+            referenceAttempts: attempts,
+            nextAttemptAt: null,
+          });
         },
       },
       ledger: {

@@ -67,6 +67,7 @@ Statement §5.9 requires uniqueness, immutability and non-negativity in the sche
 | `wager_transactions` | One reversal per reference (L-01) | Partial unique index on `reference_transaction_id` where `kind in ('REFUND','ROLLBACK') and status = 'PROCESSED'` |
 | `wager_transactions` | Reversals carry a reference and `BET`/`OPENING` refuse one (L-18); status and failure code are paired as in §6; the observed balance exists once a status is reached; movements are positive (L-03) | `CHECK` constraints |
 | `wager_transactions` | Terminal rows never change; a pending row keeps its identity, leaves only for a terminal status and keeps its observed balance when it fails | Trigger rejecting `UPDATE` of a terminal row, of an identity column or towards a non-terminal status, and any `DELETE` or `TRUNCATE` |
+| `wager_transactions` | The provider id `SYSTEM` belongs to the internal `OPENING`, and only to it | `CHECK ((provider_id = 'SYSTEM') = (kind = 'OPENING'))` |
 | `wager_transactions` | A reference belongs to the same wallet (rule 7.2), so one wallet lock covers both rows | Composite foreign key `(reference_transaction_id, wallet_id)` to `(id, wallet_id)` |
 | `wager_transactions` | A pending-reference row is always due and holds no resolved reference; `PENDING` is never committed (L-06) | `CHECK` constraints |
 | `wallet_ledger_entries` | Append-only | Triggers rejecting `UPDATE`, `DELETE` and `TRUNCATE` |

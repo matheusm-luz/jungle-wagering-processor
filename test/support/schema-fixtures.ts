@@ -35,11 +35,14 @@ export function accountRow(overrides: Row = {}): Row {
   };
 }
 
-/** A processed `BET` of 10.00 on `wallet`, with no reference. */
+/**
+ * A processed `BET` of 10.00 on `wallet`, with no reference. An `OPENING` defaults to the `SYSTEM`
+ * provider, the only one the schema allows for it.
+ */
 export function transactionRow(wallet: Row, overrides: Row = {}): Row {
   return {
     id: newId(),
-    provider_id: 'provider-a',
+    provider_id: overrides.kind === 'OPENING' ? 'SYSTEM' : 'provider-a',
     external_transaction_id: `ext-${newId()}`,
     idempotency_key: `key-${newId()}`,
     payload_hash: HASH,
@@ -143,7 +146,7 @@ export async function seedWallet(sql: SQL, balance = '100.00'): Promise<SeededWa
     return { wallet, fundingAccountId: funding, opening: undefined };
   }
   const opening = transactionRow(wallet, {
-    provider_id: 'internal',
+    provider_id: 'SYSTEM',
     kind: 'OPENING',
     amount: balance,
     observed_balance: balance,

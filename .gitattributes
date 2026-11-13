@@ -1,2 +1,4 @@
-# Scripts executed inside Linux containers break on CRLF.
+# One line ending for every text file, whatever the platform it is edited on: LF.
+# Scripts executed inside Linux containers break on CRLF, and mixed endings make whole-file diffs.
+* text=auto eol=lf
 *.sh text eol=lf

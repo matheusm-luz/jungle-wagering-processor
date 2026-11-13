@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { InvalidTransactionError, InvalidTransactionStateError } from '../../../src/domain/errors';
 import { FailureCode } from '../../../src/domain/failure-code';
+import { LedgerAccountKind } from '../../../src/domain/ledger-account';
 import { Money } from '../../../src/domain/money';
 import {
   type CreateWagerTransactionProps,
@@ -293,6 +294,24 @@ describe('WagerTransaction queries', () => {
     expect(() => ofKind(Kind.Bet).ledgerDirectionFor(referenced(Kind.Bet))).toThrow(
       /declared reference/,
     );
+  });
+
+  test('counterparty: OPENING posts against FUNDING', () => {
+    expect(ofKind(Kind.Opening).counterparty()).toEqual({ kind: LedgerAccountKind.Funding });
+  });
+
+  test('counterparty: BET, WIN, REFUND and ROLLBACK post against the settlement account of their provider', () => {
+    for (const kind of [Kind.Bet, Kind.Win, Kind.Refund, Kind.Rollback]) {
+      expect(ofKind(kind).counterparty()).toEqual({
+        kind: LedgerAccountKind.ProviderSettlement,
+        providerId: 'provider-a',
+      });
+    }
+  });
+
+  test('counterparty: LOSS has none', () => {
+    expect(() => ofKind(Kind.Loss).counterparty()).toThrow(InvalidTransactionError);
+    expect(() => ofKind(Kind.Loss).counterparty()).toThrow(/does not move the balance/);
   });
 
   test('ledgerDirectionFor: LOSS has none', () => {

@@ -16,11 +16,10 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S2 is done (13 Nov), on the branch `feat/s2-schema`. Next is S3, open and read a wallet.
+S3 is done (13 Nov), on the branch `feat/s3-open-wallet`. Next is S4, `BET`, `WIN`, `LOSS` over HTTP.
 
-1. S2 reaches `main` through a pull request, as S1 did (merged on 13 Nov). Merge it, update the local `main`, then `/sdd-implement S3`. The workflow commands are listed in `CLAUDE.md`.
-2. Matheus decided L-16, L-17 and L-18 on 13 Nov, and where the counterparty rule of ADR-12 lives (see the findings from S1).
-3. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
+1. S3 reaches `main` through a pull request, as S1 and S2 did. Merge it, update the local `main`, then `/sdd-implement S4`. The workflow commands are listed in `CLAUDE.md`.
+2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
 
 ## Phases
 
@@ -30,7 +29,7 @@ S2 is done (13 Nov), on the branch `feat/s2-schema`. Next is S3, open and read a
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0, S1 and S2 done; next is S3 |
+| 4 | Implementation, slice by slice | S0, S1, S2 and S3 done; next is S4 |
 
 ## Decisions confirmed by Matheus (12 Nov, unless dated)
 
@@ -141,6 +140,25 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **Independent review (13 Nov).** The `invariant-reviewer` found no blocker. Fixed at Matheus's request: M1 (helper and fixtures), M2 (same-wallet reference), M3 (pending row always due), m1 (`PENDING`), m2 (pending transitions), m3 (truncate test proves its own trigger), m4 (one refusal test per constraint), m7 (own database for the down/up cycle), m8 (order-independent tests). Not done: m5 (entry-to-transaction amount and status in the schema; the helper covers it in tests), m6 (the foreign key to `ledger_accounts` takes a `FOR KEY SHARE` lock on a shared account row: it serialises nothing, but ADR-12's "no shared row is written" is not literally true; worth a sentence in ADR-12 or §9), m9 (`inbox_messages.processed_at` kept because statement §6.5 defines it).
 - **Test order within S2 was not test-first after T2.** The migration was written whole in T2; the tests of T3–T8 came after it. Each refusal asserts the exact constraint name and each file has a positive control, so none passes by accident, but none was seen failing first.
 
+## Findings from S3 that later slices depend on
+
+- **Decisions of 13 Nov (docs/tasks/S3.md).** The outbox starts in S3: `IntegrationEvent`, `WagerTransactionProcessed` and `WalletBalanceChanged` exist in `src/domain/events/`; a positive opening emits both, a zero opening emits nothing. The `OPENING` row is `providerId = 'SYSTEM'`, `externalTransactionId = idempotencyKey = 'opening:<walletId>'`, `roundId = gameId = 'OPENING'`, hashed with the canonical hash. `WagerTransactionProcessed.data` carries the transaction identity, `kind`, `money`, the reference when present, the observed `balance` and `walletVersion`. S4 adds `WagerTransactionRejected`, S7 `WagerTransactionPendingReference`.
+- **Every event's `aggregateId` is the wallet id,** also for transaction events: the wallet is the unit of ordering and the future `MessageGroupId` (ADR-11). `causationId` is absent over HTTP; S9 sets it to the SQS `messageId`.
+- **The canonical hash exists** (`src/application/payload-hash.ts`): a flat object with keys `amount`, `currency`, `externalTransactionId`, `gameId`, `kind`, `playerId`, `providerId`, `roundId`, `walletId` and, when declared, `referenceExternalTransactionId`. S4 only adds the transport-field tests.
+- **Ports and transaction boundary.** `UnitOfWork.run(work)` (`src/application/ports.ts`) forks an `EntityManager` and runs `em.transactional()`. Every write in `TransactionScope` is a native `em.insert` (`insertMany` for the outbox), sent before it returns, with no identity map or flush; the records have no ORM relations, so the call order is the foreign-key order (wallet, transaction, entry, outbox). The wallet update of S4 is the first write that needs a tracked entity (loaded under the lock). S4 extends the scope with the wallet lock (`findOne` with `LockMode.PESSIMISTIC_WRITE`), the lookups and the wallet update.
+- **Constraint names reach the application.** `UniqueConstraintViolationException` carries `constraint`, because MikroORM's `DriverException` copies every property of the `pg` error (checked in `@mikro-orm/core/exceptions.js` and proven by `unit-of-work.test.ts`). The map lives in `mikro-orm-unit-of-work.ts`; S4 adds the idempotency and external-id constraints there.
+- **System accounts are resolved by one select in the common case;** only a missing account costs `INSERT … ON CONFLICT DO NOTHING` and a second select. The settlement account of S4 uses the same path.
+- **Application layer has no NestJS import.** Use cases are plain classes built by factory providers in `AppModule`; ports are bound to symbols in `src/application/tokens.ts`.
+- **HTTP errors are `{ code, message }`** through `ErrorFilter`, which handles `ApplicationError`, `RequestValidationError` and malformed JSON, and leaves every other exception to Nest (health keeps its body; an unexpected error is a plain 500, still to become 503 where transient in S12). Validation messages carry field paths only, never values.
+- **Request schema.** `playerId` is 1 to 128 characters, with no format (it is `text` in the schema) and no U+0000, which PostgreSQL cannot store in `text` (a driver error and a 500 otherwise); unknown fields are refused at every level. S4 must apply the same rules to every provider identifier, and refuse `providerId = 'SYSTEM'` with 400 before the constraint below turns it into a 500.
+- **`SYSTEM` is reserved in the schema.** `Migration20261113010000_system_provider` adds `CHECK ((provider_id = 'SYSTEM') = (kind = 'OPENING'))`. It is validated against existing rows, so `wagering_test` was dropped and recreated on 13 Nov (it held `OPENING` rows of other providers written by S2 tests); `wagering` had no violating row. Test fixtures default an `OPENING` row to `SYSTEM`.
+- **Test order within S3.** T1 to T6 were test-first and each test was seen failing for the expected reason. In T7 the `GET` route was written with the controller of T6, before its tests; a mutation run (UUID validation removed) made "an id that is not a UUID is 400" fail with a 500, so the test is not vacuous.
+- **Independent review (13 Nov).** The `invariant-reviewer` found no blocker. Fixed at Matheus's request: M1 (`SYSTEM` reserved in the schema), M2 (concurrent first use and rollback of the `FUNDING` account, both proven by a mutation run that resolves the account outside the transaction: the rollback test fails), m1 (U+0000 in `playerId`), m5 (`PROGRESS.md` and `REQUIREMENTS.md` had been rewritten with CRLF; `.gitattributes` now forces LF for every text file). Recorded for later slices:
+  - **m2, for S12:** an unexpected driver error reaches Nest's `BaseExceptionFilter`, which logs `exception.message`; MikroORM appends the PostgreSQL detail to it, and a `CHECK` violation's detail is the failing row (player, amounts). `ErrorFilter` must log only `code`, `constraint` and `sqlState` for a `DriverException` when S12 turns transient errors into 503.
+  - **m3, for S7:** `toWagerTransactionRecord` writes `referenceAttempts = 0` and `nextAttemptAt = null`, and `transactions.insert` carries no schedule. A `PENDING_REFERENCE` insert through it violates `wager_transactions_next_attempt_when_pending`; S7 must pass `nextAttemptAt` through the port.
+  - **m4:** the 409 of a duplicate wallet carries no wallet id; L-19, proposed in REQUIREMENTS.
+- **Not done:** the ADR-12 sentence on the `FOR KEY SHARE` lock (S2 review, m6) is still open.
+
 ## Slices
 
 Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
@@ -152,7 +170,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | S0 | Scaffold and harness | 12 Nov | 1.5 | done 13 Nov |
 | S1 | Domain core | 13 Nov, night session | 1.5 | done 13 Nov |
 | S2 | Schema and migrations | 13 Nov | 1.5 | done 13 Nov |
-| S3 | Open and read a wallet | 13 Nov | 1.0 | todo |
+| S3 | Open and read a wallet | 13 Nov | 1.0 | done 13 Nov |
 | S4 | `BET`, `WIN`, `LOSS` over HTTP | 13 Nov | 2.0 | todo |
 | S5 | Multi-process harness and first concurrency tests | 13 Nov | 1.0 | todo |
 | S6 | Reversals | 13 Nov | 1.5 | todo |
@@ -170,7 +188,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 
 ## Environment
 
-- Repository: `C:\Projetos\JungleGaming\backend-challenge`, remote `origin` = private GitHub repository `jungle-wagering-processor`. `main` was pushed on 13 Nov, up to the S0 scaffold and the budget recalculation; later commits stay local until Matheus asks for a push. S1 was merged into `main` through pull request #1 on 13 Nov. S2 lives on the branch `feat/s2-schema`, local only until Matheus asks for a push.
+- Repository: `C:\Projetos\JungleGaming\backend-challenge`, remote `origin` = private GitHub repository `jungle-wagering-processor`. `main` was pushed on 13 Nov, up to the S0 scaffold and the budget recalculation; later commits stay local until Matheus asks for a push. S1 was merged into `main` through pull request #1 on 13 Nov. S2 was merged into `main` through pull request #2 on 13 Nov. S3 lives on the branch `feat/s3-open-wallet`, pushed on 13 Nov with pull request #3 open.
 - Bun 1.4.4, installed through npm. `D:\Programas\nvm\installs\v24.21.0` was added to the user PATH on 12 Nov; terminals opened before that need a restart.
 - Docker Desktop 29.9.3 with Compose v5.7.0. An already-open VS Code does not see the Docker CLI; restart VS Code. Docker Desktop was not running when S1 was verified: check that it is up before `test:integration`.
 - Images already pulled: `localstack/localstack:4.12`, `postgres:17-alpine`.

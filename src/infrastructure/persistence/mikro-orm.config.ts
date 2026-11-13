@@ -4,6 +4,7 @@ import { defineConfig } from '@mikro-orm/postgresql';
 import type { Env } from '../../config/env';
 import type { JsonLogger } from '../logging/json-logger';
 import { migrations } from './migrations';
+import { records } from './records';
 
 export function buildOrmConfig(
   env: Pick<Env, 'DATABASE_URL' | 'DATABASE_CONNECT_TIMEOUT_MS'>,
@@ -15,9 +16,8 @@ export function buildOrmConfig(
     // Passed to the `pg` pool. Bounds a connection attempt to a server that stopped answering,
     // which would otherwise hang its caller and, at shutdown, `orm.close()`.
     driverOptions: { connectionTimeoutMillis: env.DATABASE_CONNECT_TIMEOUT_MS },
-    // Explicit list, no globs. Empty until the persistence records of S3 exist.
-    entities: [],
-    discovery: { warnWhenNoEntities: false },
+    // Explicit list, no globs.
+    entities: records,
     // The application never creates its database; that is provisioning, not runtime.
     ensureDatabase: false,
     extensions: [Migrator],

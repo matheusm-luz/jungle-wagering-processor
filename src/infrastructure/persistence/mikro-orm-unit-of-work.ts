@@ -9,6 +9,7 @@ import {
 import type { IdGenerator, TransactionScope, UnitOfWork } from '../../application/ports';
 import { ID_GENERATOR } from '../../application/tokens';
 import { LedgerAccountKind, type LedgerCounterparty } from '../../domain/ledger-account';
+import { WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager-transaction';
 import {
   toLedgerEntryRecord,
   toOutboxMessageRecord,
@@ -106,6 +107,23 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
             { disableIdentityMap: true },
           );
           return rows.map(toWagerTransaction);
+        },
+        findByExternalId: async (providerId, externalTransactionId) => {
+          const row = await em.findOne(
+            WagerTransactionRecord,
+            { providerId, externalTransactionId },
+            { disableIdentityMap: true },
+          );
+          return row === null ? undefined : toWagerTransaction(row);
+        },
+        hasProcessedReversal: async (referenceTransactionId) => {
+          // The predicate of wager_transactions_single_reversal, so the index answers it.
+          const count = await em.count(WagerTransactionRecord, {
+            referenceTransactionId,
+            kind: { $in: [WagerTransactionKind.Refund, WagerTransactionKind.Rollback] },
+            status: WagerTransactionStatus.Processed,
+          });
+          return count > 0;
         },
       },
       ledger: {

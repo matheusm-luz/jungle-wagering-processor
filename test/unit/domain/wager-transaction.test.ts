@@ -326,6 +326,155 @@ describe('WagerTransaction queries', () => {
   });
 });
 
+/** `transaction` moved to `PROCESSED`, resolving its own reference when it declares one. */
+function processed(transaction: WagerTransaction): WagerTransaction {
+  const resolved = transaction.referenceExternalTransactionId === undefined ? undefined : 'tx-050';
+  transaction.markProcessed(resolved, BALANCE, PROCESSED_AT);
+  return transaction;
+}
+
+describe('WagerTransaction reference rules (statement §7)', () => {
+  test('referenceFailure: undefined when every rule holds, for each allowed pair', () => {
+    const allowed: [Kind, Kind][] = [
+      [Kind.Refund, Kind.Bet],
+      [Kind.Rollback, Kind.Bet],
+      [Kind.Rollback, Kind.Win],
+      [Kind.Rollback, Kind.Refund],
+      [Kind.Win, Kind.Bet],
+      [Kind.Loss, Kind.Bet],
+    ];
+    for (const [kind, referenceKind] of allowed) {
+      const transaction = WagerTransaction.create(
+        props({ kind, referenceExternalTransactionId: 'transaction-100' }),
+      );
+      expect(transaction.referenceFailure(processed(referenced(referenceKind)), false)).toBe(
+        undefined,
+      );
+    }
+  });
+
+  test('referenceFailure: REFERENCE_MISMATCH for another player, wallet, currency or round', () => {
+    const strangers = [
+      referenced(Kind.Bet, { playerId: 'player-2' }),
+      referenced(Kind.Bet, { walletId: 'wallet-2' }),
+      referenced(Kind.Bet, { money: Money.from({ amount: '25.00', currency: 'USD' }) }),
+      referenced(Kind.Bet, { roundId: 'round-988' }),
+    ];
+    for (const stranger of strangers) {
+      expect(ofKind(Kind.Refund).referenceFailure(processed(stranger), false)).toBe(
+        FailureCode.ReferenceMismatch,
+      );
+    }
+  });
+
+  test('referenceFailure: REFERENCE_KIND_NOT_ALLOWED outside the allowed pairs', () => {
+    const forbidden: [Kind, Kind][] = [
+      [Kind.Refund, Kind.Win],
+      [Kind.Refund, Kind.Refund],
+      [Kind.Refund, Kind.Loss],
+      [Kind.Refund, Kind.Rollback],
+      [Kind.Rollback, Kind.Loss],
+      [Kind.Rollback, Kind.Rollback],
+      [Kind.Win, Kind.Win],
+      [Kind.Loss, Kind.Refund],
+    ];
+    for (const [kind, referenceKind] of forbidden) {
+      const transaction = WagerTransaction.create(
+        props({ kind, referenceExternalTransactionId: 'transaction-100' }),
+      );
+      expect(transaction.referenceFailure(processed(referenced(referenceKind)), false)).toBe(
+        FailureCode.ReferenceKindNotAllowed,
+      );
+    }
+  });
+
+  test('referenceFailure: REFERENCE_NOT_PROCESSED for a REJECTED or FAILED reference; a waiting one breaks no rule', () => {
+    const rejected = referenced(Kind.Bet);
+    rejected.reject(FailureCode.InsufficientFunds, BALANCE);
+    const failed = referenced(Kind.Bet);
+    failed.fail(FailureCode.ProcessingFailed);
+    const waiting = referenced(Kind.Refund);
+    waiting.markPendingReference(BALANCE);
+
+    expect(ofKind(Kind.Refund).referenceFailure(rejected, false)).toBe(
+      FailureCode.ReferenceNotProcessed,
+    );
+    expect(ofKind(Kind.Rollback).referenceFailure(failed, false)).toBe(
+      FailureCode.ReferenceNotProcessed,
+    );
+    // L-10: the caller keeps waiting while the reference itself waits.
+    expect(ofKind(Kind.Rollback).referenceFailure(waiting, false)).toBe(undefined);
+  });
+
+  test('referenceFailure: REFERENCE_AMOUNT_MISMATCH for a reversal only', () => {
+    const bigBet = processed(referenced(Kind.Bet, { money: brl('30.00') }));
+
+    expect(ofKind(Kind.Refund).referenceFailure(bigBet, false)).toBe(
+      FailureCode.ReferenceAmountMismatch,
+    );
+    expect(ofKind(Kind.Rollback).referenceFailure(bigBet, false)).toBe(
+      FailureCode.ReferenceAmountMismatch,
+    );
+    const win = WagerTransaction.create(
+      props({ kind: Kind.Win, referenceExternalTransactionId: 'transaction-100' }),
+    );
+    expect(win.referenceFailure(bigBet, false)).toBe(undefined);
+  });
+
+  test('referenceFailure: REFERENCE_ALREADY_REVERSED for a reversal only (L-01, L-09)', () => {
+    const bet = processed(referenced(Kind.Bet));
+
+    expect(ofKind(Kind.Refund).referenceFailure(bet, true)).toBe(
+      FailureCode.ReferenceAlreadyReversed,
+    );
+    expect(ofKind(Kind.Rollback).referenceFailure(bet, true)).toBe(
+      FailureCode.ReferenceAlreadyReversed,
+    );
+    // A WIN of a refunded BET is accepted: documented limitation (docs/tasks/S6.md, Q2).
+    const win = WagerTransaction.create(
+      props({ kind: Kind.Win, referenceExternalTransactionId: 'transaction-100' }),
+    );
+    expect(win.referenceFailure(bet, true)).toBe(undefined);
+  });
+
+  test('referenceFailure: the rules apply in order, ownership first', () => {
+    // Another round, a WIN, rejected, another amount and already reversed: ownership wins.
+    const everythingWrong = referenced(Kind.Win, { roundId: 'round-988', money: brl('30.00') });
+    everythingWrong.reject(FailureCode.InsufficientFunds, BALANCE);
+    expect(ofKind(Kind.Refund).referenceFailure(everythingWrong, true)).toBe(
+      FailureCode.ReferenceMismatch,
+    );
+
+    const wrongKind = referenced(Kind.Win, { money: brl('30.00') });
+    wrongKind.reject(FailureCode.InsufficientFunds, BALANCE);
+    expect(ofKind(Kind.Refund).referenceFailure(wrongKind, true)).toBe(
+      FailureCode.ReferenceKindNotAllowed,
+    );
+
+    const notProcessed = referenced(Kind.Bet, { money: brl('30.00') });
+    notProcessed.reject(FailureCode.InsufficientFunds, BALANCE);
+    expect(ofKind(Kind.Refund).referenceFailure(notProcessed, true)).toBe(
+      FailureCode.ReferenceNotProcessed,
+    );
+
+    const otherAmount = processed(referenced(Kind.Bet, { money: brl('30.00') }));
+    expect(ofKind(Kind.Refund).referenceFailure(otherAmount, true)).toBe(
+      FailureCode.ReferenceAmountMismatch,
+    );
+  });
+
+  test('referenceFailure: refuses a transaction that is not the declared reference', () => {
+    const stranger = processed(referenced(Kind.Bet, { externalTransactionId: 'transaction-999' }));
+
+    expect(() => ofKind(Kind.Refund).referenceFailure(stranger, false)).toThrow(
+      /declared reference/,
+    );
+    expect(() => ofKind(Kind.Bet).referenceFailure(processed(referenced(Kind.Bet)), false)).toThrow(
+      /declared reference/,
+    );
+  });
+});
+
 describe('WagerTransaction state machine', () => {
   test('allows exactly the transitions of ARCHITECTURE §5', () => {
     const allowed: Record<Status, Status[]> = {

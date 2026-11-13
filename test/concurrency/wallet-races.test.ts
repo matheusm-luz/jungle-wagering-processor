@@ -266,6 +266,69 @@ describe('distinct wallets, in parallel', () => {
   }, 30_000);
 });
 
+/** A reversal of `reference` with its own external id, hence its own idempotency key. */
+function reversal(reference: Body, kind: 'REFUND' | 'ROLLBACK'): Body {
+  return {
+    ...reference,
+    externalTransactionId: `tx-${newId()}`,
+    kind,
+    referenceExternalTransactionId: reference.externalTransactionId,
+  };
+}
+
+async function reversalsOf(walletId: string) {
+  const [row] = await sql`
+    select (select count(*)::int from wager_transactions
+             where wallet_id = ${walletId} and kind in ('REFUND', 'ROLLBACK')
+               and status = 'PROCESSED') as processed,
+           (select count(*)::int from wallet_ledger_entries
+             where wallet_id = ${walletId} and direction = 'CREDIT') as credits`;
+  return row;
+}
+
+describe('reversals across processes (S6)', () => {
+  test('the same BET refunded under 20 different keys across three processes is credited once', async () => {
+    const wallet = await openWallet(via(0));
+    const placed = bet(wallet, '30.00');
+    expect((await submit(via(0), placed)).status).toBe(200);
+
+    const answers = await Promise.all(
+      Array.from({ length: 20 }, (_, i) => submit(via(i), reversal(placed, 'REFUND'))),
+    );
+
+    expect(count(answers, (a) => a.status === 200)).toBe(1);
+    expect(
+      count(
+        answers,
+        (a) => a.status === 422 && a.body.failureCode === 'REFERENCE_ALREADY_REVERSED',
+      ),
+    ).toBe(19);
+    // The opening is the wallet's first credit; the refund is the only other one.
+    expect(await reversalsOf(wallet.id)).toEqual({ processed: 1, credits: 2 });
+    expect(await walletState(wallet.id)).toMatchObject({ balance: '100.00', version: 3 });
+  }, 30_000);
+
+  test('a REFUND and a ROLLBACK of the same BET in parallel: one PROCESSED, one REFERENCE_ALREADY_REVERSED', async () => {
+    for (let round = 0; round < 10; round++) {
+      const wallet = await openWallet(via(round));
+      const placed = bet(wallet, '30.00');
+      expect((await submit(via(round), placed)).status).toBe(200);
+
+      const answers = await Promise.all([
+        submit(via(round + 1), reversal(placed, 'REFUND')),
+        submit(via(round + 2), reversal(placed, 'ROLLBACK')),
+      ]);
+
+      expect(answers.map((a) => a.status).sort()).toEqual([200, 422]);
+      expect(answers.find((a) => a.status === 422)?.body.failureCode).toBe(
+        'REFERENCE_ALREADY_REVERSED',
+      );
+      expect(await reversalsOf(wallet.id)).toEqual({ processed: 1, credits: 2 });
+      expect(await walletState(wallet.id)).toMatchObject({ balance: '100.00', version: 3 });
+    }
+  }, 30_000);
+});
+
 /** Waits until PostgreSQL shows a session blocked by the lock that session `holder` holds. */
 async function waitForSessionBlockedBy(holder: number): Promise<void> {
   const deadline = performance.now() + 10_000;

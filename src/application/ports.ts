@@ -39,6 +39,13 @@ export interface TransactionScope {
     insert(transaction: WagerTransaction): Promise<void>;
     /** Every transaction holding this idempotency key or this provider and external id (at most two). */
     findByIdentity(identity: TransactionIdentity): Promise<WagerTransaction[]>;
+    /** The transaction a reference names (statement §7.1), on any wallet; the caller checks it. */
+    findByExternalId(
+      providerId: string,
+      externalTransactionId: string,
+    ): Promise<WagerTransaction | undefined>;
+    /** Whether a `PROCESSED` `REFUND` or `ROLLBACK` of this transaction exists (L-01). */
+    hasProcessedReversal(referenceTransactionId: string): Promise<boolean>;
   };
   ledger: {
     /** Posts `entry` against the system account `counterparty` names in the entry's currency (ADR-12). */

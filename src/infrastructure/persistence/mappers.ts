@@ -83,7 +83,9 @@ export function toWagerTransactionRecord(
     observedCurrency: transaction.observedBalance?.currency ?? null,
     processedAt: transaction.processedAt ?? null,
     referenceAttempts: 0,
-    nextAttemptAt: null,
+    // shortcut: a waiting row is due at once and only ever inserted; S7 owns attempts and backoff.
+    nextAttemptAt:
+      transaction.status === WagerTransactionStatus.PendingReference ? transaction.createdAt : null,
     createdAt: transaction.createdAt,
   };
 }

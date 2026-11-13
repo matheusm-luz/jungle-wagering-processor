@@ -1,5 +1,6 @@
 import type { IntegrationEvent } from '../domain/events/integration-event';
 import type { LedgerCounterparty } from '../domain/ledger-account';
+import type { Money } from '../domain/money';
 import type { WagerTransaction } from '../domain/wager-transaction';
 import type { Wallet } from '../domain/wallet';
 import type { WalletLedgerEntry } from '../domain/wallet-ledger-entry';
@@ -92,7 +93,35 @@ export interface UnitOfWork {
   run<T>(work: (scope: TransactionScope) => Promise<T>): Promise<T>;
 }
 
+/** A wallet's stored balance next to its ledger sums, read in one snapshot (R-49). */
+export interface ReconciliationInput {
+  walletId: string;
+  stored: Money;
+  credits: Money;
+  debits: Money;
+  entries: number;
+}
+
 /** Reads outside any transaction: a committed snapshot, no lock. */
 export interface WalletQueries {
   findById(walletId: string): Promise<Wallet | undefined>;
+  findTransactionById(id: string): Promise<WagerTransaction | undefined>;
+  findTransactionByExternalId(
+    providerId: string,
+    externalTransactionId: string,
+  ): Promise<WagerTransaction | undefined>;
+  /**
+   * Up to `limit` entries with a sequence above `afterSequence`, ascending; undefined when the
+   * wallet does not exist.
+   */
+  ledgerPage(
+    walletId: string,
+    afterSequence: number,
+    limit: number,
+  ): Promise<WalletLedgerEntry[] | undefined>;
+  /**
+   * The stored balance and the ledger sums from one statement, so from one snapshot: two reads
+   * could see a commit in between and report a divergence that does not exist.
+   */
+  reconciliationInput(walletId: string): Promise<ReconciliationInput | undefined>;
 }

@@ -28,6 +28,14 @@ export class WalletNotFoundError extends ApplicationError {
   }
 }
 
+export class TransactionNotFoundError extends ApplicationError {
+  readonly code = 'TRANSACTION_NOT_FOUND';
+
+  constructor() {
+    super('Transaction not found');
+  }
+}
+
 /** ADR-03: the same key with another payload is a conflict, never a replay. */
 export class IdempotencyKeyConflictError extends ApplicationError {
   readonly code = 'IDEMPOTENCY_KEY_CONFLICT';

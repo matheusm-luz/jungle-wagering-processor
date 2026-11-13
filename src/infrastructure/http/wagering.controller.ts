@@ -1,10 +1,15 @@
-import { Body, Controller, Headers, Post, Res } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { z } from 'zod';
+import { GetTransaction } from '../../application/get-transaction';
 import { ProcessWagerTransaction } from '../../application/process-wager-transaction';
 import { FailureCode } from '../../domain/failure-code';
 import type { MoneyProps } from '../../domain/money';
-import { WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager-transaction';
+import {
+  type WagerTransaction,
+  WagerTransactionKind,
+  WagerTransactionStatus,
+} from '../../domain/wager-transaction';
 import { addLogContext, currentLogContext } from '../logging/log-context';
 import { IdempotencyKeyRequiredError } from './request-validation.error';
 import {
@@ -58,11 +63,14 @@ export interface WagerTransactionResponse {
   idempotentReplay: boolean;
 }
 
-@Controller('wagering/transactions')
+@Controller()
 export class WageringController {
-  constructor(private readonly processWagerTransaction: ProcessWagerTransaction) {}
+  constructor(
+    private readonly processWagerTransaction: ProcessWagerTransaction,
+    private readonly getTransaction: GetTransaction,
+  ) {}
 
-  @Post()
+  @Post('wagering/transactions')
   async submit(
     @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Body() body: unknown,
@@ -95,10 +103,77 @@ export class WageringController {
       transactionId: transaction.id,
       status: transaction.status,
       ...(failureCode === undefined ? {} : { failureCode }),
-      ...(failureCode === FailureCode.WalletPlayerMismatch
-        ? {}
-        : { balance: observedBalance.toJSON() }),
+      ...visibleBalance(transaction),
       idempotentReplay,
     };
   }
+
+  @Get('wagering/transactions/:transactionId')
+  async byId(@Param('transactionId') transactionId: string): Promise<TransactionView> {
+    const id = parse(uuidSchema, transactionId);
+    return toView(await this.getTransaction.byId(id));
+  }
+
+  @Get('providers/:providerId/wagering/transactions/:externalTransactionId')
+  async byExternalId(
+    @Param('providerId') providerId: string,
+    @Param('externalTransactionId') externalTransactionId: string,
+  ): Promise<TransactionView> {
+    const provider = parse(identifierSchema, providerId);
+    const externalId = parse(identifierSchema, externalTransactionId);
+    addLogContext({ providerId: provider });
+    return toView(await this.getTransaction.byExternalId(provider, externalId));
+  }
+}
+
+/** Statement §9 queries: the stored transaction, with the same balance rule as the `POST` answer. */
+export interface TransactionView {
+  transactionId: string;
+  providerId: string;
+  externalTransactionId: string;
+  walletId: string;
+  playerId: string;
+  roundId: string;
+  gameId: string;
+  kind: WagerTransactionKind;
+  money: MoneyProps;
+  referenceExternalTransactionId?: string;
+  referenceTransactionId?: string;
+  status: WagerTransactionStatus;
+  failureCode?: FailureCode;
+  balance?: MoneyProps;
+  createdAt: string;
+  processedAt?: string;
+}
+
+/** The observed balance, absent for `WALLET_PLAYER_MISMATCH`: the wallet is not the caller's (L-20). */
+function visibleBalance(transaction: WagerTransaction): { balance?: MoneyProps } {
+  const { observedBalance, failureCode } = transaction;
+  return observedBalance === undefined || failureCode === FailureCode.WalletPlayerMismatch
+    ? {}
+    : { balance: observedBalance.toJSON() };
+}
+
+function toView(transaction: WagerTransaction): TransactionView {
+  addLogContext({ transactionId: transaction.id, walletId: transaction.walletId });
+  const optional = <K extends string, V>(key: K, value: V | undefined) =>
+    value === undefined ? {} : ({ [key]: value } as Record<K, V>);
+  return {
+    transactionId: transaction.id,
+    providerId: transaction.providerId,
+    externalTransactionId: transaction.externalTransactionId,
+    walletId: transaction.walletId,
+    playerId: transaction.playerId,
+    roundId: transaction.roundId,
+    gameId: transaction.gameId,
+    kind: transaction.kind,
+    money: transaction.money.toJSON(),
+    ...optional('referenceExternalTransactionId', transaction.referenceExternalTransactionId),
+    ...optional('referenceTransactionId', transaction.referenceTransactionId),
+    status: transaction.status,
+    ...optional('failureCode', transaction.failureCode),
+    ...visibleBalance(transaction),
+    createdAt: transaction.createdAt.toISOString(),
+    ...optional('processedAt', transaction.processedAt?.toISOString()),
+  };
 }

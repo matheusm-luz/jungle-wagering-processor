@@ -12,7 +12,13 @@ export type LedgerProblemKind =
   /** A processed transaction that moves money has no matching entry (amount, currency, direction). */
   | 'MISSING_ENTRY'
   /** An entry belongs to a transaction that moves no money (`LOSS`, or not `PROCESSED`). */
-  | 'UNEXPECTED_ENTRY';
+  | 'UNEXPECTED_ENTRY'
+  /**
+   * ADR-12 trial balance, per currency: the wallet balances plus the system-account nets (what the
+   * accounts gave minus what they took back) are not zero. `walletId` holds the currency. In the
+   * transfer-row model every row is balanced, so this follows from `BALANCE` on every wallet.
+   */
+  | 'TRIAL_BALANCE';
 
 export interface LedgerProblem {
   walletId: string;
@@ -62,30 +68,42 @@ export async function findLedgerProblems(sql: SQL): Promise<LedgerProblem[]> {
         from wager_transactions t
        where t.status = 'PROCESSED' and t.kind <> 'LOSS'
     )
-    select id as "walletId", 'BALANCE' as problem, balance::text || ' <> ' || rebuilt::text as detail
+    select id::text as "walletId", 'BALANCE' as problem, balance::text || ' <> ' || rebuilt::text as detail
       from sums where balance <> rebuilt
     union all
-    select id, 'VERSION', version::text || ' <> ' || last_sequence::text
+    select id::text, 'VERSION', version::text || ' <> ' || last_sequence::text
       from sums where version <> last_sequence
     union all
     -- A wallet opened with a balance starts at sequence 1; one opened at zero is already at
     -- version 1, so its first entry is sequence 2.
-    select wallet_id, 'CHAIN', id::text
+    select wallet_id::text, 'CHAIN', id::text
       from chained
      where (position = 1 and (balance_before <> 0 or sequence not in (1, 2)))
         or (position > 1 and (balance_before <> previous_after or sequence <> previous_sequence + 1))
     union all
-    select t.wallet_id, 'MISSING_ENTRY', t.id::text
+    select t.wallet_id::text, 'MISSING_ENTRY', t.id::text
       from expected t
      where (select count(*) from wallet_ledger_entries e
              where e.transaction_id = t.id and e.wallet_id = t.wallet_id
                and e.amount = t.amount and e.currency = t.currency
                and e.direction = t.expected_direction) <> 1
     union all
-    select e.wallet_id, 'UNEXPECTED_ENTRY', e.id::text
+    select e.wallet_id::text, 'UNEXPECTED_ENTRY', e.id::text
       from wallet_ledger_entries e
       join wager_transactions t on t.id = e.transaction_id
      where t.status <> 'PROCESSED' or t.kind = 'LOSS'
+    union all
+    select currency::text, 'TRIAL_BALANCE', wallets_total::text || ' <> ' || accounts_given::text
+      from (
+        select w.currency, sum(w.balance) as wallets_total,
+               coalesce((select sum(case e.direction when 'CREDIT' then e.amount else -e.amount end)
+                           from wallet_ledger_entries e
+                           join ledger_accounts a on a.id = e.counterparty_account_id
+                          where a.currency = w.currency), 0) as accounts_given
+          from wallets w
+         group by w.currency
+      ) trial
+     where wallets_total <> accounts_given
   `;
 }
 

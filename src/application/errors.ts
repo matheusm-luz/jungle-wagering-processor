@@ -54,6 +54,15 @@ export class ExternalTransactionConflictError extends ApplicationError {
   }
 }
 
+/** ADR-05: the same queue message id with another payload. Never applied; dead-lettered. */
+export class InboxMessageConflictError extends ApplicationError {
+  readonly code = 'INBOX_MESSAGE_CONFLICT';
+
+  constructor() {
+    super('The message id was already processed with another payload');
+  }
+}
+
 /** A request the domain refuses on its own (L-03, L-18), such as a `BET` of zero: answered 400. */
 export class InvalidWagerTransactionError extends ApplicationError {
   readonly code = 'VALIDATION_ERROR';

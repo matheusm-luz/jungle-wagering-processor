@@ -205,6 +205,23 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
           await em.insertMany(OutboxMessageRecord, events.map(toOutboxMessageRecord));
         },
       },
+      inbox: {
+        record: async ({ consumerName, messageId, payloadHash, at }) => {
+          // On a conflict PostgreSQL waits for the other inserter to end; the select after it is a
+          // new statement, so at READ COMMITTED it sees that row once committed.
+          const inserted = await em.execute<{ n: number }[]>(
+            `insert into inbox_messages (consumer_name, message_id, payload_hash, received_at, processed_at)
+             values (?, ?, ?, ?, ?) on conflict do nothing returning 1 as n`,
+            [consumerName, messageId, payloadHash, at, at],
+          );
+          if (inserted.length === 1) return 'new';
+          const [stored] = await em.execute<{ payload_hash: string }[]>(
+            'select payload_hash from inbox_messages where consumer_name = ? and message_id = ?',
+            [consumerName, messageId],
+          );
+          return stored?.payload_hash === payloadHash ? 'duplicate' : 'conflict';
+        },
+      },
     };
   }
 

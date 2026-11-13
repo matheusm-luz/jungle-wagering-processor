@@ -16,9 +16,9 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S8 is done (13 Nov), committed on the branch `feat/s8-read-side`. Next is S9, the SQS consumer.
+S9 is done (13 Nov), committed on the branch `feat/s9-sqs-consumer`. Next is S10, the outbox publisher.
 
-1. S8 reaches `main` through a pull request, as S1 to S7 did. Then `/sdd-implement S9` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
+1. S9 reaches `main` through a pull request, as S1 to S8 did. Then `/sdd-implement S10` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
 2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
 
 ## Phases
@@ -29,7 +29,7 @@ S8 is done (13 Nov), committed on the branch `feat/s8-read-side`. Next is S9, th
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0 to S8 done; next is S9 |
+| 4 | Implementation, slice by slice | S0 to S9 done; next is S10 |
 
 ## Decisions confirmed by Matheus (12 Nov, unless dated)
 
@@ -183,6 +183,18 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **Test order within S8.** T1, T2 and T9 test-first and seen failing; T3 to T8 written first but first run after the code; the review fixes changed tests and code together. Mutation runs are listed in `docs/tasks/S8.md`.
 - **Independent review (13 Nov).** The `invariant-reviewer` found no blocker and no major. All nine minors fixed at Matheus's request (m1 to m9, listed in `docs/tasks/S8.md`): the two concurrent read tests now prove their overlap, a new test proves reads never wait for the wallet lock, the cursor is bound to its wallet, the `OPENING` is read through the transaction routes, and the import cycle is gone.
 
+## Findings from S9 that later slices depend on
+
+- **Decisions of 13 Nov (docs/tasks/S9.md).** Q1: the 409 conflicts are permanent on SQS, dead-lettered by the consumer. Q2: `DATABASE_LOCK_TIMEOUT_MS` (5 s) on every application connection, not on the migrator; HTTP still answers a lock timeout with 500, **S12 maps it to 503**. Q3: `SQS_CONSUMER_CONCURRENCY` loops of one message per receive (Matheus first chose batches of 10, then changed once the receive-count cost was stated).
+- **Use case.** `ProcessWagerTransaction.executeMessage(command, { consumerName, messageId })` writes the inbox row first, before the wallet lock, and answers `'duplicate'`, `'walletNotFound'` (L-08: the inbox row commits alone) or the usual result. `execute` (HTTP) is unchanged. The SQS correlation id is the envelope `messageId`.
+- **Consumer.** `src/infrastructure/messaging/wager-transaction.consumer.ts`; policy in `consumer-policy.ts` (backoff in whole seconds; anything unclassified is transient). On `SIGTERM` the open long poll is left to end, not aborted (see the S9 notes): **S10's publisher and S12 must keep that in mind for any long poll they add.** Compose gives `app` 30 s to stop; the `test` container sets `SQS_WAIT_TIME_S=1`.
+- **For S10.** The consumer writes outbox rows exactly as HTTP does; nothing publishes them yet. A concurrency test of S10 can drive load through the queue with `test/support/queues.ts` (`createTestQueues`, `wagerMessage`), which creates a private FIFO pair with the same redrive policy per suite.
+- **For S11.** Counters already incremented: `sqs_duplicate_messages`, `sqs_unknown_wallet_messages`, `sqs_message_retries`, `sqs_messages_dead_lettered` (R-61 duplicates, retries, DLQ messages). The DLQ counter counts only what the consumer dead-letters itself; the redrive policy's moves are visible only as the DLQ depth.
+- **For S12 (S9 review, m9).** `lock_timeout` now fires everywhere: over HTTP a wait beyond 5 s is a 500 with no `Retry-After` until S12 maps 55P03 to 503 (ADR-05); in the pending-reference worker it ends in a 60 s postpone, whose own update may also time out. Throughput only, no financial effect.
+- **Independent review (13 Nov).** No blocker; M1 and m1 to m8 fixed in a second commit after the first, at Matheus's request; m9 is the item above. A review of PR #9 then led to a third commit: the inbox hash now covers the idempotency key, a loop stops before opening a long poll once `SIGTERM` came, and shutdown keeps each in-flight message's queue url instead of looking it up. Details in `docs/tasks/S9.md`.
+- **For S12.** A failure the consumer cannot classify is retried and reaches the DLQ through the redrive policy, never `FAILED`: the `FAILED` path is still S12's. The pending-reference worker and the consumer both see SQS or PostgreSQL down as transient.
+- **Harness.** `startProcesses` exposes `exited` per process. Test queues must be read with `take` (deletes) or `peek` (visibility 0): a FIFO message left in flight blocks its group.
+
 ## Slices
 
 Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
@@ -200,7 +212,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | S6 | Reversals | 13 Nov | 1.5 | done 13 Nov |
 | S7 | Pending references | 13 Nov | 1.5 | done 13 Nov |
 | S8 | Read side | 13 Nov | 1.0 | done 13 Nov |
-| S9 | SQS consumer | 14 Nov | 2.5 | todo |
+| S9 | SQS consumer | 14 Nov | 2.5 | done 13 Nov |
 | S10 | Outbox publisher | 14 Nov | 2.0 | todo |
 | S11 | Observability and CI | 14 Nov | 1.0 | todo |
 | S12 | Failure modes | 14 Nov | 1.0 | todo |

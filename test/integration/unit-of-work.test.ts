@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import type { MikroORM } from '@mikro-orm/postgresql';
+import { MikroORM } from '@mikro-orm/postgresql';
 import type { SQL } from 'bun';
 import {
   ExternalTransactionConflictError,
@@ -18,8 +18,9 @@ import {
   WagerTransactionStatus,
 } from '../../src/domain/wager-transaction';
 import { Wallet } from '../../src/domain/wallet';
+import { buildOrmConfig } from '../../src/infrastructure/persistence/mikro-orm.config';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
-import { migratedDatabase } from '../support/database';
+import { migratedDatabase, silentLogger, testEnv } from '../support/database';
 import { expectLedgerInvariant } from '../support/ledger-invariant';
 import { startOrm } from '../support/orm';
 import {
@@ -586,5 +587,45 @@ describe('TransactionScope pending references (S7)', () => {
     await expect(
       unitOfWork.run((scope) => scope.transactions.reschedule(refund.id, 11, at(LATER))),
     ).rejects.toThrow('not waiting');
+  });
+});
+
+describe('lock timeout (ADR-01, docs/tasks/S9.md Q2)', () => {
+  test('a wallet held longer than the lock timeout fails the waiting transaction with 55P03', async () => {
+    const shortOrm = await MikroORM.init(
+      buildOrmConfig({ ...testEnv, DATABASE_LOCK_TIMEOUT_MS: 200 }, silentLogger),
+    );
+    const waiting = new MikroOrmUnitOfWork(shortOrm, { newId });
+    const { wallet } = await seedWallet(sql, '10.00');
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked = () => {};
+    const isLocked = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+
+    const holder = sql.begin(async (tx) => {
+      await tx`select id from wallets where id = ${wallet.id as string} for update`;
+      locked();
+      await held;
+    });
+    await isLocked;
+    try {
+      const started = performance.now();
+      const error = await waiting
+        .run((scope) => scope.wallets.lock(wallet.id as string))
+        .then(
+          () => undefined,
+          (caught: unknown) => caught as { code?: string },
+        );
+      expect(error?.code).toBe('55P03');
+      expect(performance.now() - started).toBeLessThan(2000);
+    } finally {
+      release();
+      await holder;
+      await shortOrm.close();
+    }
   });
 });

@@ -5,6 +5,8 @@ export interface AppProcesses {
   readonly urls: readonly string[];
   /** Operating-system pid of each process, in the same order. */
   readonly pids: readonly number[];
+  /** Settles when each process exits, by itself or by a signal; same order. */
+  readonly exited: readonly Promise<unknown>[];
   /** Sends `SIGTERM` to every process and waits for all of them to exit. */
   stop(): Promise<void>;
 }
@@ -40,6 +42,7 @@ export async function startProcesses(
   return {
     urls: spawned.map(({ url }) => url),
     pids: spawned.map(({ proc }) => proc.pid),
+    exited: spawned.map(({ proc }) => proc.exited),
     stop,
   };
 }

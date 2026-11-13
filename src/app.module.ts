@@ -20,6 +20,7 @@ import { WageringController } from './infrastructure/http/wagering.controller';
 import { WalletsController } from './infrastructure/http/wallets.controller';
 import { JsonLogger } from './infrastructure/logging/json-logger';
 import { createSqsClient, SQS_CLIENT } from './infrastructure/messaging/sqs.provider';
+import { WagerTransactionConsumer } from './infrastructure/messaging/wager-transaction.consumer';
 import { Metrics } from './infrastructure/metrics/metrics';
 import { buildOrmConfig } from './infrastructure/persistence/mikro-orm.config';
 import { MikroOrmUnitOfWork } from './infrastructure/persistence/mikro-orm-unit-of-work';
@@ -79,6 +80,7 @@ export class AppModule implements OnApplicationShutdown {
           inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR],
         },
         PendingReferenceWorker,
+        WagerTransactionConsumer,
         {
           provide: GetWallet,
           useFactory: (wallets: WalletQueries) => new GetWallet(wallets),

@@ -20,7 +20,12 @@ export async function runMigrations(
   direction: MigrationDirection,
   migrationsList: MigrationObject[] = migrations,
 ): Promise<string[]> {
-  const orm = await MikroORM.init(buildOrmConfig(env, logger, migrationsList));
+  // Only these two fields: the env `migrate.ts` passes also holds the lock timeout, which DDL at
+  // deploy time must not inherit (S9 review, m1).
+  const { DATABASE_URL, DATABASE_CONNECT_TIMEOUT_MS } = env;
+  const orm = await MikroORM.init(
+    buildOrmConfig({ DATABASE_URL, DATABASE_CONNECT_TIMEOUT_MS }, logger, migrationsList),
+  );
   try {
     const touched = direction === 'up' ? await orm.migrator.up() : await orm.migrator.down();
     return touched.map((migration) => migration.name);

@@ -1,0 +1,95 @@
+name: wagering
+
+x-app-environment: &app-environment
+  DATABASE_URL: postgresql://wagering:wagering@postgres:5432/wagering
+  AWS_REGION: us-east-1
+  AWS_ENDPOINT_URL: http://localstack:4566
+  # Dummy credentials: LocalStack accepts any value, and the AWS SDK requires some.
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: wagering
+      POSTGRES_DB: wagering
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagering -d wagering"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  localstack:
+    # Pinned: later images require an account and an auth token (ADR-07).
+    image: localstack/localstack:4.12
+    environment:
+      SERVICES: sqs,sns
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - "${LOCALSTACK_HOST_PORT:-4566}:4566"
+    volumes:
+      - ./infra/localstack/init:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      # Healthy only after the init script created the queues, the topic and the subscription.
+      test: ["CMD-SHELL", "awslocal sns list-subscriptions --query 'length(Subscriptions)' --output text | grep -qx 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # One-shot: applies pending migrations and exits. The application never migrates at boot,
+  # because several instances starting together would race on the same DDL.
+  migrate:
+    build:
+      context: .
+      target: runtime
+    command: ["bun", "src/migrate.ts", "up"]
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      target: runtime
+    environment: *app-environment
+    ports:
+      # A range, so `docker compose up --scale app=3` can publish one host port per instance.
+      - "3000-3002:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r = await fetch('http://localhost:3000/health/ready'); process.exit(r.ok ? 0 : 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # Integration and concurrency suites, started by `bun run test:integration`.
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    environment:
+      <<: *app-environment
+      DATABASE_URL: postgresql://wagering:wagering@postgres:5432/wagering_test
+      LOG_LEVEL: silent
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

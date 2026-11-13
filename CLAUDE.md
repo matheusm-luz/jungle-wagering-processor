@@ -43,16 +43,21 @@ Project skills in `.claude/skills/`. They follow the spec-kit sequence but write
 
 ## Commands
 
-Planned; none exists until the scaffold slice. Update this section when they do.
+Docker must be running for everything except `typecheck`, `lint` and `test:unit`.
 
-| Command | Purpose |
-| --- | --- |
-| `bun run typecheck` | `tsc --noEmit`, strict |
-| `bun run lint` | Biome |
-| `bun run test:unit` | Domain tests, no I/O |
-| `bun run test:integration` | Real PostgreSQL and LocalStack through Docker Compose |
-| `bun run test:concurrency` | Real parallelism, three or more app processes |
-| `bun run test:load` | Optional load test |
+| Command | Purpose | Status |
+| --- | --- | --- |
+| `bun run typecheck` | `tsc --noEmit`, strict | exists |
+| `bun run lint` | Biome check; `bun run lint:fix` applies formatting and safe fixes | exists |
+| `bun run test:unit` | Tests with no I/O | exists |
+| `bun run test:integration` | Real PostgreSQL and LocalStack. Builds the `test` image and runs the suite inside it, through Docker Compose | exists |
+| `bun run test:concurrency` | Real parallelism, three or more app processes | planned, S5 |
+| `bun run test:load` | Optional load test | planned, optional |
+| `bun run migrate up` / `down` | Apply pending migrations, or revert the latest one, on `DATABASE_URL` | exists |
+| `bun run start` | Run one instance on the host; needs `.env` (see `.env.example`) | exists |
+| `docker compose up -d --build --wait` | Whole stack: PostgreSQL, LocalStack, one-shot `migrate`, `app`. Add `--scale app=3` for three instances | exists |
+
+To run one integration file: `docker compose --profile test run --rm --build test bun test ./test/integration/<file>`.
 
 ## Global invariants
 

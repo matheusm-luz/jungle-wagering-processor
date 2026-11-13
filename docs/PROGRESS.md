@@ -16,10 +16,10 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-Requirements, architecture and plan were approved by Matheus on 13 Nov and are committed.
+S0 is done (13 Nov). Next is S1, the domain core.
 
-1. Run `/progress <current time>` first: the schedule below still assumes S0–S2 on 12 Nov, and none of them started that day.
-2. Start implementation with `/sdd-implement S0`, then S1 and S2. The workflow commands are listed in `CLAUDE.md`.
+1. Run `/progress <current time>` first: the clock above was last informed on 12 Nov, and the schedule below still assumes S0–S2 on that day.
+2. Continue with `/sdd-implement S1`, then S2. The workflow commands are listed in `CLAUDE.md`.
 
 ## Phases
 
@@ -29,7 +29,7 @@ Requirements, architecture and plan were approved by Matheus on 13 Nov and are c
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | not started; next is S0 |
+| 4 | Implementation, slice by slice | S0 done; next is S1 |
 
 ## Decisions confirmed by Matheus (12 Nov)
 
@@ -90,6 +90,18 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - LocalStack container: `SERVICES=sqs,sns`, health at `/_localstack/health`, region `us-east-1`, dummy credentials `test` / `test`.
 - Ids: `Bun.randomUUIDv7()`.
 
+## Findings from S0 that later slices depend on
+
+- **MikroORM 7 connects lazily.** `orm.checkConnection()` answers "Connection not established" until some query has run, even with PostgreSQL up. Readiness uses `orm.em.getConnection().execute('select 1')`, which connects on first use.
+- **The `pg` driver has no connect timeout by default.** A server that accepts the connection and never answers hangs the caller and `orm.close()`. `DATABASE_CONNECT_TIMEOUT_MS` (default 5000) is passed as `driverOptions.connectionTimeoutMillis`. Statement and lock timeouts are still open, for S4 and S12.
+- **LocalStack returns queue URLs on `sqs.us-east-1.localhost.localstack.cloud:4566`,** a name that resolves to 127.0.0.1 and is therefore wrong inside another container. S0 only resolves the queue by name, so nothing breaks yet. S9 must decide how the consumer addresses the queue and check it in the official LocalStack and AWS SDK documentation.
+- **MikroORM's `debug` option must stay off:** query logging prints SQL parameters, which are financial data. The ORM's own lines (migrator progress) already go through the JSON logger.
+- **Biome's `useImportType` is off** on purpose: it rewrites the imports of classes that NestJS injects by type into `import type`, which erases them at run time.
+- **Migrations never run at application boot.** `migrate` is a one-shot Compose service; test suites that need the schema call `runMigrations` in their setup.
+- **Suites use the database `wagering_test`,** created by `infra/postgres/init` when the volume is first initialised. A volume created before that script existed has to be recreated.
+- **Ledger-invariant helper.** No S0 test can assert the ledger invariant, because the tables arrive in S2. The shared helper is due with the first test that writes a wallet (S3).
+- **Requirements with no slice in `PLAN.md`:** R-51 (the no-op `AuthGuard` and `ProviderIdentityPort` of ADR-08 need code, and the health endpoints must stay outside the guard) and the cross-cutting R-04 to R-07, R-10 to R-12, R-62 and R-69. To be assigned through `/sdd-plan`.
+
 ## Slices
 
 Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
@@ -98,7 +110,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | --- | --- | --- | --- | --- |
 | — | Environment, repository move, risk tests, private GitHub repository | 12 Nov | — | done |
 | — | Requirements, architecture, plan and workflow commands | 12–13 Nov | — | done, approved 13 Nov |
-| S0 | Scaffold and harness | 12 Nov | 1.5 | todo |
+| S0 | Scaffold and harness | 12 Nov | 1.5 | done 13 Nov |
 | S1 | Domain core | 12 Nov | 1.5 | todo |
 | S2 | Schema and migrations | 12 Nov | 1.5 | todo |
 | S3 | Open and read a wallet | 13 Nov | 1.0 | todo |

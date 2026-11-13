@@ -20,9 +20,9 @@ Requirement types:
 
 | ID | § | Type | Requirement | Status |
 | --- | --- | --- | --- | --- |
-| R-01 | 4 | TC | Bun 1.x as runtime, package manager and test runner; TypeScript strict; NestJS | pending |
-| R-02 | 4 | TC | PostgreSQL; SQS through LocalStack or MiniStack; Docker Compose | pending |
-| R-03 | 4 | TC | Versioned, reversible migrations | pending |
+| R-01 | 4 | TC | Bun 1.x as runtime, package manager and test runner; TypeScript strict; NestJS | done — `bun run typecheck` (strict `tsconfig.json`); `test/integration/health.test.ts` "is 200 with PostgreSQL and SQS up" boots NestJS on Bun |
+| R-02 | 4 | TC | PostgreSQL; SQS through LocalStack or MiniStack; Docker Compose | done — `compose.yaml`; `test/integration/health.test.ts` "is 200 with PostgreSQL and SQS up" |
+| R-03 | 4 | TC | Versioned, reversible migrations | in progress — runner proven by `test/integration/migration-runner.test.ts`; the schema migrations are S2 |
 | R-04 | 4 | TC | MikroORM (preferred) or TypeORM; no Prisma | pending |
 | R-05 | 5.1 | IC | Money is never a `number`, float or double | pending |
 | R-06 | 5.2 | IC | Idempotency is never guaranteed by an in-memory cache | pending |
@@ -69,7 +69,7 @@ Requirement types:
 | R-47 | 9, 6.3 | BR | `payloadHash` over canonical JSON of the business fields; identical request is a replay, different payload is a conflict | pending |
 | R-48 | 9 | TC | HTTP status distinguishes invalid payload, idempotency conflict, business rejection, pending acceptance and transient failure, consistently | pending |
 | R-49 | 9 | TC | Reconciliation: divergence is logged, counted in a metric and flagged in the response; never silently fixed | pending |
-| R-50 | 9, 12 | TC | `/health/live` and `/health/ready` (PostgreSQL and SQS), without authentication | pending |
+| R-50 | 9, 12 | TC | `/health/live` and `/health/ready` (PostgreSQL and SQS), without authentication | done — `test/integration/health.test.ts`, seven cases including each dependency down and both hanging |
 | R-51 | 2 | DOC, OPT | Authentication: external IdP, or an explicit extension point with the design documented | pending |
 | R-52 | 10 | TC | Queues `wager-transactions.fifo` and `wager-transactions-dlq.fifo`; the consumer reuses the HTTP use case | pending |
 | R-53 | 10 | IC | Persistent inbox keyed by `(consumerName, messageId)`; redelivery has no duplicated effect | pending |
@@ -79,7 +79,7 @@ Requirement types:
 | R-57 | 11 | TC | Outbox worker safe with concurrent publishers; survives a crash between commit and publish | pending |
 | R-58 | 11 | TC | Four minimum events; `WalletBalanceChanged` only when the balance changes | pending |
 | R-59 | 11 | TC | Abstract `IntegrationEvent` envelope with one concrete subclass per event; `data` carries `MoneyProps` | pending |
-| R-60 | 12 | TC | JSON logs with `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; no full financial payloads | pending |
+| R-60 | 12 | TC | JSON logs with `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; no full financial payloads | in progress — logger and correlation id: `test/unit/logging/json-logger.test.ts`, `test/integration/correlation.test.ts`; the payload-leak audit is S11 |
 | R-61 | 12 | TC | Metrics: transactions by status, duplicates, retries, DLQ messages, lock conflicts, outbox lag, processing latency | pending |
 | R-62 | 13 | MT | Unit: `Money`, `Wallet` invariants, rules of the five operations, currency conflict, divergent payload | pending |
 | R-63 | 13 | MT | Integration on real containers: migrations and constraints, atomicity, inbox and redelivery, concurrent publishers, retry and DLQ, restart recovery | pending |

@@ -1,2 +1,6 @@
 # Personal Claude Code settings; the shared commands and agents in .claude/ are versioned.
 .claude/settings.local.json
+
+.env
+*.log
+node_modules

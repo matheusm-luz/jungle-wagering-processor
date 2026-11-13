@@ -8,18 +8,18 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 | --- | --- |
 | Statement received | 2026-11-12 10:32 |
 | Deadline | **2026-11-15 10:32** |
-| Last time informed | 2026-11-12 20:51, with 1h spent |
-| Budget stated afterwards | 6 more hours on 12 Nov |
+| Last time informed | 2026-11-13 00:28 |
+| Budget stated on 12 Nov | 6h from 20:51, so the night session ends at about 02:50 on 13 Nov; 3.6h of it are used |
 | Daily budget | 10h |
 
-**Remaining budget:** 6h on 12 Nov, 10h on 13 Nov, 10h on 14 Nov: **26h**. The plan needs 23.5h (see [PLAN.md](PLAN.md)), which leaves about 2.5h. The morning of 15 Nov is not part of the budget: Matheus allows it only for a critical emergency.
+**Remaining budget (at 13 Nov 00:28):** 2.4h left of the night session, 10h on 13 Nov, 10h on 14 Nov: **22.4h**. The slices that are not done need **22h** (S1–S13 20.5h, double-entry 1.5h; see [PLAN.md](PLAN.md)). Slack: **0.4h**, which is none in practice — the 2.5h buffer went into the specification phase and S0. This assumes the night session still runs to about 02:50 as stated; if the hours after midnight count against the 10h of 13 Nov, the budget is 20h and the deficit is 2h. The morning of 15 Nov is not part of the budget: Matheus allows it only for a critical emergency.
 
 ## Next step
 
-S0 is done (13 Nov). Next is S1, the domain core.
+S0 is done (13 Nov, 00:26). Next is S1, the domain core.
 
-1. Run `/progress <current time>` first: the clock above was last informed on 12 Nov, and the schedule below still assumes S0–S2 on that day.
-2. Continue with `/sdd-implement S1`, then S2. The workflow commands are listed in `CLAUDE.md`.
+1. `/sdd-implement S1` in what is left of the night session (1.5h, no Docker needed), then S2. The workflow commands are listed in `CLAUDE.md`.
+2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
 
 ## Phases
 
@@ -111,20 +111,20 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | — | Environment, repository move, risk tests, private GitHub repository | 12 Nov | — | done |
 | — | Requirements, architecture, plan and workflow commands | 12–13 Nov | — | done, approved 13 Nov |
 | S0 | Scaffold and harness | 12 Nov | 1.5 | done 13 Nov |
-| S1 | Domain core | 12 Nov | 1.5 | todo |
-| S2 | Schema and migrations | 12 Nov | 1.5 | todo |
+| S1 | Domain core | 13 Nov, night session | 1.5 | todo |
+| S2 | Schema and migrations | 13 Nov | 1.5 | todo |
 | S3 | Open and read a wallet | 13 Nov | 1.0 | todo |
 | S4 | `BET`, `WIN`, `LOSS` over HTTP | 13 Nov | 2.0 | todo |
 | S5 | Multi-process harness and first concurrency tests | 13 Nov | 1.0 | todo |
 | S6 | Reversals | 13 Nov | 1.5 | todo |
 | S7 | Pending references | 13 Nov | 1.5 | todo |
 | S8 | Read side | 13 Nov | 1.0 | todo |
-| S9 | SQS consumer | 13–14 Nov | 2.5 | todo |
+| S9 | SQS consumer | 14 Nov | 2.5 | todo |
 | S10 | Outbox publisher | 14 Nov | 2.0 | todo |
 | S11 | Observability and CI | 14 Nov | 1.0 | todo |
 | S12 | Failure modes | 14 Nov | 1.0 | todo |
 | S13 | Documentation and delivery | 14 Nov | 3.0 | todo |
-| — | Double-entry, folded into S2, S3, S4, S6, S8 | 12–13 Nov | +1.5 | todo |
+| — | Double-entry, folded into S2, S3, S4, S6, S8 | 13 Nov | +1.5 | todo |
 
 - **Freeze:** end of the 8th hour on 14 Nov. Submit that night.
 - **Optional, only if ahead:** load test, Keycloak, OpenTelemetry.

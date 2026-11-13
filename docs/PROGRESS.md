@@ -131,7 +131,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 
 ## Environment
 
-- Repository: `C:\Projetos\JungleGaming\backend-challenge`, remote `origin` = private GitHub repository `jungle-wagering-processor`. Only the statement commit is pushed; the specification commits of 13 Nov are local until Matheus asks for a push.
+- Repository: `C:\Projetos\JungleGaming\backend-challenge`, remote `origin` = private GitHub repository `jungle-wagering-processor`. `main` was pushed on 13 Nov, up to the S0 scaffold and the budget recalculation; later commits stay local until Matheus asks for a push.
 - Bun 1.4.4, installed through npm. `D:\Programas\nvm\installs\v24.21.0` was added to the user PATH on 12 Nov; terminals opened before that need a restart.
 - Docker Desktop 29.9.3 with Compose v5.7.0. An already-open VS Code does not see the Docker CLI; restart VS Code.
 - Images already pulled: `localstack/localstack:4.12`, `postgres:17-alpine`.

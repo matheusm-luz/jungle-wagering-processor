@@ -18,7 +18,7 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 S1 is done (13 Nov), on the branch `feat/s1-domain-core`. Next is S2, schema and migrations.
 
-1. Decide how the S1 branch reaches `main` (merge or pull request), then `/sdd-implement S2`. The workflow commands are listed in `CLAUDE.md`.
+1. S1 reaches `main` through a pull request (Matheus's choice, 13 Nov). Merge it, update the local `main`, then `/sdd-implement S2`. The workflow commands are listed in `CLAUDE.md`.
 2. Matheus decided L-16, L-17 and L-18 on 13 Nov, and where the counterparty rule of ADR-12 lives (see the findings from S1).
 3. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
 
@@ -154,7 +154,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 
 ## Environment
 
-- Repository: `C:\Projetos\JungleGaming\backend-challenge`, remote `origin` = private GitHub repository `jungle-wagering-processor`. `main` was pushed on 13 Nov, up to the S0 scaffold and the budget recalculation; later commits stay local until Matheus asks for a push. S1 lives on the local branch `feat/s1-domain-core`, not merged into `main`.
+- Repository: `C:\Projetos\JungleGaming\backend-challenge`, remote `origin` = private GitHub repository `jungle-wagering-processor`. `main` was pushed on 13 Nov, up to the S0 scaffold and the budget recalculation; later commits stay local until Matheus asks for a push. S1 lives on the branch `feat/s1-domain-core`, pushed on 13 Nov with a pull request against `main`; it is not merged yet.
 - Bun 1.4.4, installed through npm. `D:\Programas\nvm\installs\v24.21.0` was added to the user PATH on 12 Nov; terminals opened before that need a restart.
 - Docker Desktop 29.9.3 with Compose v5.7.0. An already-open VS Code does not see the Docker CLI; restart VS Code. Docker Desktop was not running when S1 was verified: check that it is up before `test:integration`.
 - Images already pulled: `localstack/localstack:4.12`, `postgres:17-alpine`.

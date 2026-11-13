@@ -65,12 +65,15 @@ Statement §5.9 requires uniqueness, immutability and non-negativity in the sche
 | `wager_transactions` | One transaction per idempotency key | `UNIQUE (idempotency_key)` |
 | `wager_transactions` | One transaction per provider and external id | `UNIQUE (provider_id, external_transaction_id)` |
 | `wager_transactions` | One reversal per reference (L-01) | Partial unique index on `reference_transaction_id` where `kind in ('REFUND','ROLLBACK') and status = 'PROCESSED'` |
-| `wager_transactions` | Reversals carry a reference; rejections carry a failure code; movements are positive | `CHECK` constraints |
-| `wager_transactions` | Terminal rows never change | Trigger rejecting `UPDATE` of a terminal row and any `DELETE` |
+| `wager_transactions` | Reversals carry a reference and `BET`/`OPENING` refuse one (L-18); status and failure code are paired as in §6; the observed balance exists once a status is reached; movements are positive (L-03) | `CHECK` constraints |
+| `wager_transactions` | Terminal rows never change; a pending row keeps its identity, leaves only for a terminal status and keeps its observed balance when it fails | Trigger rejecting `UPDATE` of a terminal row, of an identity column or towards a non-terminal status, and any `DELETE` or `TRUNCATE` |
+| `wager_transactions` | A reference belongs to the same wallet (rule 7.2), so one wallet lock covers both rows | Composite foreign key `(reference_transaction_id, wallet_id)` to `(id, wallet_id)` |
+| `wager_transactions` | A pending-reference row is always due and holds no resolved reference; `PENDING` is never committed (L-06) | `CHECK` constraints |
 | `wallet_ledger_entries` | Append-only | Triggers rejecting `UPDATE`, `DELETE` and `TRUNCATE` |
 | `wallet_ledger_entries` | At most one entry per transaction and wallet | `UNIQUE (transaction_id, wallet_id)` |
 | `wallet_ledger_entries` | No lost update can ever be recorded | `UNIQUE (wallet_id, sequence)`, where `sequence` is the wallet version the entry produced |
 | `wallet_ledger_entries` | Entry arithmetic | `CHECK` that `balance_after = balance_before ± amount` according to `direction`, `amount > 0`, `balance_after >= 0` |
+| `wallet_ledger_entries` | An entry's currency is its wallet's and its account's; its wallet is its transaction's wallet | Composite foreign keys on `(wallet_id, currency)`, `(counterparty_account_id, currency)` and `(transaction_id, wallet_id)` |
 | `wallet_ledger_entries` | Every entry names its counterparty account (ADR-12) | `counterparty_account_id NOT NULL` with a foreign key to `ledger_accounts` |
 | `ledger_accounts` | One system account per kind, provider and currency | `UNIQUE NULLS NOT DISTINCT (kind, provider_id, currency)`; `CHECK` that only `PROVIDER_SETTLEMENT` has a provider |
 | `inbox_messages` | A message is processed once per consumer | Primary key `(consumer_name, message_id)` |
@@ -223,6 +226,7 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 | L-01 | At most one processed reversal per reference, of any kind. A `ROLLBACK` of the `REFUND` itself stays allowed. Stricter than rule 7.4, to protect the "no duplicated credit" invariant. |
 | L-02 | Amounts must have exactly two decimals; `"25"` and `"25.5"` are 400. |
 | L-03 | `BET`, `WIN`, `REFUND` and `ROLLBACK` require a positive amount. `LOSS` and the opening balance accept zero. |
+| L-06 | `PENDING` is the initial in-memory state and is never committed; HTTP is synchronous. The schema refuses it. |
 | L-08 | A transaction for an unknown wallet is not persisted: 404 over HTTP; on SQS, ack with log, metric and inbox row. |
 | L-16 | A currency is any ISO-4217 code by shape, three uppercase letters, with no allow-list; every currency is handled at a scale of two. The challenge runs in `BRL`, the model stays multi-currency. |
 | L-17 | One amount has one spelling: digits, a dot and two decimals, with no sign, no whitespace, no leading zeros and at most 17 integer digits, the range of `NUMERIC(19,2)`. |

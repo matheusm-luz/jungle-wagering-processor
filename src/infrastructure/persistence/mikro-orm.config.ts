@@ -15,7 +15,7 @@ export function buildOrmConfig(
     // Passed to the `pg` pool. Bounds a connection attempt to a server that stopped answering,
     // which would otherwise hang its caller and, at shutdown, `orm.close()`.
     driverOptions: { connectionTimeoutMillis: env.DATABASE_CONNECT_TIMEOUT_MS },
-    // Explicit list, no globs. Empty until the persistence records of S2 exist.
+    // Explicit list, no globs. Empty until the persistence records of S3 exist.
     entities: [],
     discovery: { warnWhenNoEntities: false },
     // The application never creates its database; that is provisioning, not runtime.

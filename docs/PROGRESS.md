@@ -16,9 +16,9 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S1 is done (13 Nov), on the branch `feat/s1-domain-core`. Next is S2, schema and migrations.
+S2 is done (13 Nov), on the branch `feat/s2-schema`. Next is S3, open and read a wallet.
 
-1. S1 reaches `main` through a pull request (Matheus's choice, 13 Nov). Merge it, update the local `main`, then `/sdd-implement S2`. The workflow commands are listed in `CLAUDE.md`.
+1. S2 reaches `main` through a pull request, as S1 did (merged on 13 Nov). Merge it, update the local `main`, then `/sdd-implement S3`. The workflow commands are listed in `CLAUDE.md`.
 2. Matheus decided L-16, L-17 and L-18 on 13 Nov, and where the counterparty rule of ADR-12 lives (see the findings from S1).
 3. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
 
@@ -30,7 +30,7 @@ S1 is done (13 Nov), on the branch `feat/s1-domain-core`. Next is S2, schema and
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0 and S1 done; next is S2 |
+| 4 | Implementation, slice by slice | S0, S1 and S2 done; next is S3 |
 
 ## Decisions confirmed by Matheus (12 Nov, unless dated)
 
@@ -52,6 +52,7 @@ Full reasoning in [ARCHITECTURE.md](../ARCHITECTURE.md).
 | D12 | Double-entry | In scope, as a differential. Transfer-row model: each ledger entry names a counterparty system account (`FUNDING` or `PROVIDER_SETTLEMENT`), with no materialised system balance and no extra lock |
 | L-01 | Reversal uniqueness | One processed reversal per reference, of any kind |
 | L-02 | Amount format | Exactly two decimals |
+| L-06 | `PENDING` (13 Nov) | Never committed; the schema refuses it |
 | L-03 | Zero amounts | Positive for `BET`, `WIN`, `REFUND`, `ROLLBACK`; zero allowed for `LOSS` and opening balance |
 | L-08 | Unknown wallet | Not persisted: 404 over HTTP; ack with log, metric and inbox row on SQS |
 | L-16 | Currencies (13 Nov) | Any ISO-4217 code by shape, no allow-list; scale of two for all; the challenge runs in `BRL` |
@@ -103,7 +104,7 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **Biome's `useImportType` is off** on purpose: it rewrites the imports of classes that NestJS injects by type into `import type`, which erases them at run time.
 - **Migrations never run at application boot.** `migrate` is a one-shot Compose service; test suites that need the schema call `runMigrations` in their setup.
 - **Suites use the database `wagering_test`,** created by `infra/postgres/init` when the volume is first initialised. A volume created before that script existed has to be recreated.
-- **Ledger-invariant helper.** No S0 test can assert the ledger invariant, because the tables arrive in S2. The shared helper is due with the first test that writes a wallet (S3).
+- **Ledger-invariant helper.** Delivered in S2: `test/support/ledger-invariant.ts`. Every integration file, the S0 ones included, now ends with it.
 - **Requirements with no slice in `PLAN.md`:** R-51 (the no-op `AuthGuard` and `ProviderIdentityPort` of ADR-08 need code, and the health endpoints must stay outside the guard) and the cross-cutting R-04 to R-07, R-10 to R-12, R-62 and R-69. To be assigned through `/sdd-plan`.
 
 ## Findings from S1 that later slices depend on
@@ -125,6 +126,21 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **Counterparty of ADR-12 (decided by Matheus, 13 Nov).** The rule "`OPENING` posts against `FUNDING`; `BET`, `WIN`, `REFUND` and `ROLLBACK` post against the settlement account of the provider" will be a domain query on `WagerTransaction`, unit-tested, added in S3 with its first use. The repository resolves it to `counterparty_account_id`; `WalletMovement` and `LedgerEntryState` stay as they are. Rejected: the account id on the ledger entry; the rule only in the persistence mapper.
 - **Integration events are not built yet,** although ARCHITECTURE §1 places them in the domain. They arrive with S4, as planned.
 
+## Findings from S2 that later slices depend on
+
+- **Every constraint and index has a name, and Bun reports it.** `Bun.SQL` errors carry the SQLSTATE in `errno` and the name in `constraint`. S3 and S4 map by name: `wallets_player_currency_key` → 409 `WALLET_ALREADY_EXISTS`; `wager_transactions_idempotency_key_key` and `wager_transactions_provider_external_key` → roll back, re-read and answer (the backstop path of ARCHITECTURE §2); `wager_transactions_single_reversal` → the S6 race. MikroORM wraps driver errors, so S3 must check which property carries the name there (`UniqueConstraintViolationException` and its cause) in the official docs.
+- **Trigger refusals are SQLSTATE `P0001`.** They mean a programming error (an update of a terminal row, a ledger change), never a business outcome: the application must not map them to 409 or 422.
+- **Internal ids are `uuid` columns.** A `walletId` that is not a UUID makes PostgreSQL raise `22P02` instead of returning no row, so the request schema of S4 must validate it as a UUID before the query, or the provider gets a 500 instead of a 400 or 404. Provider-supplied strings (`playerId`, external ids, round, game, idempotency key) are `text` with no format.
+- **The `OPENING` transaction of S3 must satisfy the same constraints as any other:** `payload_hash` of 64 lowercase hex characters, a non-empty `provider_id` and external id unique per provider, `PROCESSED` with `processed_at` and the observed balance. S3 chooses those values.
+- **`FUNDING` accounts are created on first use, like settlement accounts.** L-16 admits any currency, so the migration seeds nothing. Both go through `INSERT … ON CONFLICT DO NOTHING` and a select (proven in `schema-ledger-accounts.test.ts`).
+- **Columns the domain does not model yet:** `reference_attempts` and `next_attempt_at` on `wager_transactions` (S7); `outbox_messages.next_attempt_at` is `NOT NULL` and starts at `occurred_at`, so `OutboxMessage.enqueue` or its mapper sets it (S10). `correlation_id` is not stored: L-15 is still proposed, and S4 adds it with its own migration if accepted.
+- **The schema refuses `PENDING`** (L-06, accepted 13 Nov). A `PENDING_REFERENCE` row must have `next_attempt_at` and no `reference_transaction_id`; it may only move to a terminal status, and `FAILED` keeps its observed balance (trigger). S7 sets `next_attempt_at` when it persists the row.
+- **A reference must belong to the same wallet** (composite foreign key, rule 7.2). A rejected reversal may keep its resolved reference id only when it is in the same wallet: a `REFERENCE_MISMATCH` against another wallet leaves `reference_transaction_id` null. The single-reversal index counts only `PROCESSED` rows, so a rejected reversal can sit next to the applied one.
+- **The ledger-invariant helper checks more than the balance:** version against the last sequence, the chain of entries (balance and sequence), exactly one entry of the right amount, currency and direction for each processed transaction that moves money, and no entry for the others. A test that commits a processed transaction must commit its entry and the wallet change with it (`applyTransaction` in `test/support/schema-fixtures.ts`, the SQL shape of the S4 use case).
+- **Tests cannot clean the ledger,** by design. Every test uses fresh ids and the invariant runs over the whole suite database. `schema.test.ts` runs its down/up cycle on a throwaway database of its own, `wagering_schema_lifecycle`. A state that must never be committed is written inside `inRolledBackTransaction`. Changing a migration that was already applied requires recreating `wagering` and `wagering_test` (done on 13 Nov).
+- **Independent review (13 Nov).** The `invariant-reviewer` found no blocker. Fixed at Matheus's request: M1 (helper and fixtures), M2 (same-wallet reference), M3 (pending row always due), m1 (`PENDING`), m2 (pending transitions), m3 (truncate test proves its own trigger), m4 (one refusal test per constraint), m7 (own database for the down/up cycle), m8 (order-independent tests). Not done: m5 (entry-to-transaction amount and status in the schema; the helper covers it in tests), m6 (the foreign key to `ledger_accounts` takes a `FOR KEY SHARE` lock on a shared account row: it serialises nothing, but ADR-12's "no shared row is written" is not literally true; worth a sentence in ADR-12 or §9), m9 (`inbox_messages.processed_at` kept because statement §6.5 defines it).
+- **Test order within S2 was not test-first after T2.** The migration was written whole in T2; the tests of T3–T8 came after it. Each refusal asserts the exact constraint name and each file has a positive control, so none passes by accident, but none was seen failing first.
+
 ## Slices
 
 Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
@@ -135,7 +151,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | — | Requirements, architecture, plan and workflow commands | 12–13 Nov | — | done, approved 13 Nov |
 | S0 | Scaffold and harness | 12 Nov | 1.5 | done 13 Nov |
 | S1 | Domain core | 13 Nov, night session | 1.5 | done 13 Nov |
-| S2 | Schema and migrations | 13 Nov | 1.5 | todo |
+| S2 | Schema and migrations | 13 Nov | 1.5 | done 13 Nov |
 | S3 | Open and read a wallet | 13 Nov | 1.0 | todo |
 | S4 | `BET`, `WIN`, `LOSS` over HTTP | 13 Nov | 2.0 | todo |
 | S5 | Multi-process harness and first concurrency tests | 13 Nov | 1.0 | todo |
@@ -154,7 +170,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 
 ## Environment
 
-- Repository: `C:\Projetos\JungleGaming\backend-challenge`, remote `origin` = private GitHub repository `jungle-wagering-processor`. `main` was pushed on 13 Nov, up to the S0 scaffold and the budget recalculation; later commits stay local until Matheus asks for a push. S1 lives on the branch `feat/s1-domain-core`, pushed on 13 Nov with a pull request against `main`; it is not merged yet.
+- Repository: `C:\Projetos\JungleGaming\backend-challenge`, remote `origin` = private GitHub repository `jungle-wagering-processor`. `main` was pushed on 13 Nov, up to the S0 scaffold and the budget recalculation; later commits stay local until Matheus asks for a push. S1 was merged into `main` through pull request #1 on 13 Nov. S2 lives on the branch `feat/s2-schema`, local only until Matheus asks for a push.
 - Bun 1.4.4, installed through npm. `D:\Programas\nvm\installs\v24.21.0` was added to the user PATH on 12 Nov; terminals opened before that need a restart.
 - Docker Desktop 29.9.3 with Compose v5.7.0. An already-open VS Code does not see the Docker CLI; restart VS Code. Docker Desktop was not running when S1 was verified: check that it is up before `test:integration`.
 - Images already pulled: `localstack/localstack:4.12`, `postgres:17-alpine`.

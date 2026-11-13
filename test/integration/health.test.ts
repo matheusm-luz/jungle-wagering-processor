@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, describe, expect, test } from 'bun:test';
 import type { TCPSocketListener } from 'bun';
 import { startApp, type TestApp } from '../support/app';
+import { expectLedgerInvariantOnSuiteDatabase } from '../support/ledger-invariant';
 
 // Nothing listens on port 1: connections are refused at once.
 const REFUSED_DATABASE_URL = 'postgresql://wagering:wagering@127.0.0.1:1/wagering_test';
@@ -114,4 +115,8 @@ describe('GET /health/ready', () => {
     });
     expect(elapsedMs).toBeLessThan(1500);
   });
+});
+
+afterAll(async () => {
+  await expectLedgerInvariantOnSuiteDatabase();
 });

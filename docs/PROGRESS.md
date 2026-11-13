@@ -16,9 +16,9 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S4 is done (13 Nov), on the branch `feat/s4-bet-win-loss`. Next is S5, the multi-process harness and the first concurrency tests.
+S5 is done (13 Nov), on the branch `feat/s5-concurrency`. Next is S6, reversals (`REFUND` and `ROLLBACK`).
 
-1. S4 reaches `main` through a pull request, as S1 to S3 did. Merge it, update the local `main`, then `/sdd-implement S5`. The workflow commands are listed in `CLAUDE.md`.
+1. S5 reaches `main` through a pull request, as S1 to S4 did. Merge it, update the local `main`, then `/sdd-implement S6`. The workflow commands are listed in `CLAUDE.md`.
 2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
 
 ## Phases
@@ -29,7 +29,7 @@ S4 is done (13 Nov), on the branch `feat/s4-bet-win-loss`. Next is S5, the multi
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0 to S4 done; next is S5 |
+| 4 | Implementation, slice by slice | S0 to S5 done; next is S6 |
 
 ## Decisions confirmed by Matheus (12 Nov, unless dated)
 
@@ -206,3 +206,12 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 - Bun 1.4.4, installed through npm. `D:\Programas\nvm\installs\v24.21.0` was added to the user PATH on 12 Nov; terminals opened before that need a restart.
 - Docker Desktop 29.9.3 with Compose v5.7.0. An already-open VS Code does not see the Docker CLI; restart VS Code. Docker Desktop was not running when S1 was verified: check that it is up before `test:integration`.
 - Images already pulled: `localstack/localstack:4.12`, `postgres:17-alpine`.
+
+## Findings from S5 that later slices depend on
+
+- **Harness (ADR-09).** `startProcesses(count)` in `test/support/processes.ts` spawns `bun src/main.ts` with the suite environment and a free port each, waits for `/health/ready` and stops them with `SIGTERM`. It returns `urls`, `pids` and `stop()`; S9 and S10 need to kill one chosen process and inject a failpoint, so they will extend it (a per-process `kill(i, signal)` and extra environment per process). Process logs are off (`LOG_LEVEL=silent` of the test container) and stderr is read only when a process dies before it is ready. Two latent risks for S9 (review m6): `stop()` has no deadline and no `SIGKILL` fallback, which a consumer in a 20 s long poll could push past the 30 s `afterAll`; and stderr is a pipe nobody drains while the process lives, so a process that writes about 64 KB to it would block. S9 adds the deadline and inherits or drains stderr. The harness refuses duplicate probe ports (review m2).
+- **`bun run test:concurrency`** runs `test/concurrency/` in the same `test` image and container as the integration suite. The concurrency suite takes about 2 s.
+- **The `version` guard is a real second line.** In the mutation run without `PESSIMISTIC_WRITE`, every race test failed but the ledger invariant held: the version guard of `wallets.update` and `UNIQUE (wallet_id, sequence)` refused the lost updates. Those refusals are not mapped (a plain 500, or 409 when the idempotency index fires first); with the lock in place they cannot happen.
+- **No `lock_timeout` yet, and the wait is bounded by the pool, not by the lock (review m4).** A request waits for the wallet lock while holding a pool connection; the `pg` pool has `max` 10 per process (`mikro-orm.config.ts` sets no `pool`), and `connectionTimeoutMillis` (5000) is also the wait for a free connection. On a hot wallet held for more than 5 s, the requests beyond 10 per process fail with `timeout exceeded when trying to connect`, a 500 today. Nothing is written and a retry with the same key is idempotent. S12 sets `lock_timeout` and `statement_timeout`, maps both those and the pool acquisition timeout to 503, and tests the three.
+- **Not covered here:** reversals racing their reference (S6, S7), the SQS consumer and outbox publisher across processes (S9, S10), restart (R-71).
+- **Independent review (13 Nov).** The `invariant-reviewer` found no blocker and no major. Fixed at Matheus's request: m1 (money compared as strings in tests, never `number`), m2 (duplicate probe ports refused), m3 (R-47 across processes: same key, two payloads, one 200 and one 409), m5 (the R-66 wait is tied to the runner's backend through `pg_blocking_pids`). Recorded: m4 (pool wait, for S12) and m6 (harness stop and stderr, for S9), above. The S4 caveat is closed: R-39 and R-47 are now proven across three processes. Mutation runs (global advisory lock, hash check off, failing `afterAll`) are listed in `docs/tasks/S5.md`.

@@ -10,7 +10,8 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "test:unit": "bun test ./test/unit",
-    "test:integration": "docker compose --profile test run --rm --build test bun test ./test/integration"
+    "test:integration": "docker compose --profile test run --rm --build test bun test ./test/integration",
+    "test:concurrency": "docker compose --profile test run --rm --build test bun test ./test/concurrency"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "3.1168.0",

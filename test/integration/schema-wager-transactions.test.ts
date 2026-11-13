@@ -443,8 +443,6 @@ describe('wager_transactions immutability', () => {
       currency: 'USD',
       reference_external_transaction_id: 'ext-y',
       created_at: new Date(0),
-      // The worker's events carry it (L-15, S7 review m1).
-      correlation_id: 'corr-z',
     };
     for (const [column, value] of Object.entries(changes)) {
       await expectRefused(
@@ -452,6 +450,25 @@ describe('wager_transactions immutability', () => {
         raised(/identity of wager transaction .* cannot change/),
       );
     }
+  });
+
+  test('the correlation id of a row cannot change once written (S7 review, m1)', async () => {
+    // The worker's events carry it (L-15). Refused by its own trigger on forbid_change().
+    const waiting = await insertTransaction(sql, pendingReference({ correlation_id: 'corr-a' }));
+    const unset = await insertTransaction(sql, pendingReference());
+
+    for (const [id, value] of [
+      [waiting.id, 'corr-z'],
+      [waiting.id, null],
+      [unset.id, 'corr-z'],
+    ]) {
+      await expectRefused(
+        sql`update wager_transactions set correlation_id = ${value} where id = ${id}`,
+        raised(/UPDATE on wager_transactions is not allowed/),
+      );
+    }
+    // Rewriting the same value is not a change.
+    await sql`update wager_transactions set correlation_id = 'corr-a' where id = ${waiting.id}`;
   });
 
   test('an empty correlation id is refused (S7 review, m1)', async () => {

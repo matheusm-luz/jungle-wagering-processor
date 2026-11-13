@@ -68,7 +68,8 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
   /** Interrupts the pause after a failed receive; never a receive itself. */
   private readonly stop = new AbortController();
   private readonly receiving = new Set<Promise<Message | undefined>>();
-  private readonly inFlight = new Map<string, Promise<void>>();
+  /** By receipt handle, with the queue it came from: shutdown needs no url lookup (PR #9 review). */
+  private readonly inFlight = new Map<string, { work: Promise<void>; queue: string }>();
   private urls: Promise<QueueUrls> | undefined;
 
   constructor(
@@ -105,19 +106,16 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
         after(this.env.SQS_WAIT_TIME_S * 1000 + 5000),
       ]),
       Promise.race([
-        Promise.allSettled([...this.inFlight.values()]),
+        Promise.allSettled([...this.inFlight.values()].map(({ work }) => work)),
         after(this.env.SQS_SHUTDOWN_GRACE_MS),
       ]),
     ]);
     for (const timer of timers) clearTimeout(timer);
 
-    const unfinished = [...this.inFlight.keys()];
-    if (unfinished.length > 0) {
-      const { queue } = await this.queueUrls();
-      await Promise.all(
-        unfinished.map((handle) => this.changeVisibility(queue, handle, 0, 'shutdown')),
-      );
-    }
+    const unfinished = [...this.inFlight];
+    await Promise.all(
+      unfinished.map(([handle, { queue }]) => this.changeVisibility(queue, handle, 0, 'shutdown')),
+    );
     this.logger.info('sqs consumer stopped', { returned: unfinished.length });
   }
 
@@ -125,6 +123,9 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
     while (!this.stopping) {
       try {
         const urls = await this.queueUrls();
+        // SIGTERM may have come during the lookup. From here to `receiving.add` nothing yields, so
+        // shutdown either sees this poll or it never starts (PR #9 review).
+        if (this.stopping) return;
         const receive = this.receive(urls);
         this.receiving.add(receive);
         const message = await receive.finally(() => this.receiving.delete(receive));
@@ -162,7 +163,7 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
     const handle = message.ReceiptHandle;
     if (handle === undefined) return;
     const work = this.handle(message, handle, urls).finally(() => this.inFlight.delete(handle));
-    this.inFlight.set(handle, work);
+    this.inFlight.set(handle, { work, queue: urls.queue });
     await work;
   }
 

@@ -45,3 +45,12 @@ export function payloadHash(fields: PayloadHashFields): string {
   );
   return createHash('sha256').update(JSON.stringify(sorted), 'utf8').digest('hex');
 }
+
+/**
+ * What the inbox compares for one message id: the business payload and the idempotency key. The
+ * key is part of the message, so the same id with another key is a conflict, not a duplicate that
+ * would hide it (PR #9 review); the transaction's own hash stays key-free (ADR-03).
+ */
+export function inboxHash(payloadHashValue: string, idempotencyKey: string): string {
+  return createHash('sha256').update(`${payloadHashValue}:${idempotencyKey}`, 'utf8').digest('hex');
+}

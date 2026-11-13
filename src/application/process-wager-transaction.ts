@@ -9,7 +9,7 @@ import {
   InvalidWagerTransactionError,
   WalletNotFoundError,
 } from './errors';
-import { payloadHash } from './payload-hash';
+import { inboxHash, payloadHash } from './payload-hash';
 import type { Clock, IdGenerator, UnitOfWork } from './ports';
 import { settle, settlementEvents } from './settlement';
 
@@ -93,7 +93,7 @@ export class ProcessWagerTransaction {
         // Before the wallet lock: a redelivery stops here, and commits nothing new.
         const inbox = await scope.inbox.record({
           ...message,
-          payloadHash: transaction.payloadHash,
+          payloadHash: inboxHash(transaction.payloadHash, idempotencyKey),
           at: receivedAt,
         });
         if (inbox === 'duplicate') return 'duplicate';

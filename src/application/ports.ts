@@ -44,7 +44,7 @@ export interface PendingTransaction {
 export interface InboxRecord {
   consumerName: string;
   messageId: string;
-  /** The transaction's payload hash (ADR-03): the same id with another payload is a conflict. */
+  /** `inboxHash`: payload and idempotency key; the same id with another of either is a conflict. */
   payloadHash: string;
   at: Date;
 }

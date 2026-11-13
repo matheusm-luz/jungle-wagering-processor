@@ -366,6 +366,20 @@ describe('SQS consumer: permanent failures go to the DLQ at once (R-55)', () => 
     expect(await walletState(target.id)).toEqual({ balance: '70.00', transactions: 1 });
   });
 
+  test('the same messageId with another idempotency key goes to the DLQ (PR #9 review)', async () => {
+    const target = await wallet();
+    const data = bet(target);
+    const messageId = await send(data);
+    await waitFor(() => inboxRow(messageId));
+
+    await send({ ...data, idempotencyKey: `other-key-${newId()}` }, messageId);
+
+    const dead = await deadLettered(messageId);
+    expect(failureReason(dead)).toBe('InboxMessageConflictError');
+    await drained();
+    expect(await walletState(target.id)).toEqual({ balance: '70.00', transactions: 1 });
+  });
+
   test('an idempotency key or external id conflict goes to the DLQ (docs/tasks/S9.md Q1)', async () => {
     const target = await wallet();
     const data = bet(target);

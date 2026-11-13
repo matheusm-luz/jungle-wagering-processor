@@ -215,6 +215,27 @@ describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () 
     });
   });
 
+  test('the same message id with another idempotency key is an InboxMessageConflictError (PR #9 review)', async () => {
+    const useCase = new ProcessWagerTransaction(
+      new MikroOrmUnitOfWork(orm, { newId }),
+      { now: () => new Date() },
+      { newId },
+    );
+    const { walletId, command } = await bet();
+    const message = inbox();
+    await useCase.executeMessage(command, message);
+
+    const otherKey = { ...command, idempotencyKey: `other-key-${newId()}` };
+    await expect(useCase.executeMessage(otherKey, message)).rejects.toBeInstanceOf(
+      InboxMessageConflictError,
+    );
+    expect(await effects(walletId, message.messageId)).toEqual({
+      balance: '70.00',
+      bets: 1,
+      inbox: 1,
+    });
+  });
+
   test('a message for an unknown wallet commits only its inbox row (L-08)', async () => {
     const useCase = new ProcessWagerTransaction(
       new MikroOrmUnitOfWork(orm, { newId }),

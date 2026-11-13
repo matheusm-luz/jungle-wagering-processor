@@ -234,6 +234,24 @@ describe('ledger invariant helper', () => {
     });
   });
 
+  test('reports a currency whose wallets and system accounts do not net to zero (ADR-12 trial balance)', async () => {
+    const { wallet } = await seedWallet(sql, '100.00');
+    const trialBalance = async (tx: SQL) =>
+      (await findLedgerProblems(tx)).filter((problem) => problem.problem === 'TRIAL_BALANCE');
+    expect(await trialBalance(sql)).toEqual([]);
+
+    await inRolledBackTransaction(sql, async (tx) => {
+      await tx`update wallets set balance = balance + 0.01 where id = ${wallet.id}`;
+      expect(await trialBalance(tx)).toEqual([
+        {
+          walletId: wallet.currency as string,
+          problem: 'TRIAL_BALANCE',
+          detail: expect.any(String),
+        },
+      ]);
+    });
+  });
+
   test('reports a processed transaction without its entry and an entry that should not exist', async () => {
     const { wallet } = await seedWallet(sql, '100.00');
 

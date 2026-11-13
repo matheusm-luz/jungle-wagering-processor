@@ -2,10 +2,13 @@ import { SQSClient } from '@aws-sdk/client-sqs';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { type DynamicModule, Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
+import { GetLedger } from './application/get-ledger';
+import { GetTransaction } from './application/get-transaction';
 import { GetWallet } from './application/get-wallet';
 import { OpenWallet } from './application/open-wallet';
 import type { Clock, IdGenerator, UnitOfWork, WalletQueries } from './application/ports';
 import { ProcessWagerTransaction } from './application/process-wager-transaction';
+import { ReconcileWallet } from './application/reconcile-wallet';
 import { ResolvePendingReferences } from './application/resolve-pending-references';
 import { CLOCK, ID_GENERATOR, UNIT_OF_WORK, WALLET_QUERIES } from './application/tokens';
 import type { Env } from './config/env';
@@ -17,6 +20,7 @@ import { WageringController } from './infrastructure/http/wagering.controller';
 import { WalletsController } from './infrastructure/http/wallets.controller';
 import { JsonLogger } from './infrastructure/logging/json-logger';
 import { createSqsClient, SQS_CLIENT } from './infrastructure/messaging/sqs.provider';
+import { Metrics } from './infrastructure/metrics/metrics';
 import { buildOrmConfig } from './infrastructure/persistence/mikro-orm.config';
 import { MikroOrmUnitOfWork } from './infrastructure/persistence/mikro-orm-unit-of-work';
 import { MikroOrmWalletQueries } from './infrastructure/persistence/mikro-orm-wallet-queries';
@@ -80,6 +84,22 @@ export class AppModule implements OnApplicationShutdown {
           useFactory: (wallets: WalletQueries) => new GetWallet(wallets),
           inject: [WALLET_QUERIES],
         },
+        {
+          provide: GetTransaction,
+          useFactory: (wallets: WalletQueries) => new GetTransaction(wallets),
+          inject: [WALLET_QUERIES],
+        },
+        {
+          provide: GetLedger,
+          useFactory: (wallets: WalletQueries) => new GetLedger(wallets),
+          inject: [WALLET_QUERIES],
+        },
+        {
+          provide: ReconcileWallet,
+          useFactory: (wallets: WalletQueries) => new ReconcileWallet(wallets),
+          inject: [WALLET_QUERIES],
+        },
+        Metrics,
       ],
     };
   }

@@ -16,9 +16,9 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S7 is done (13 Nov), committed on the branch `feat/s7-pending-references`. Next is S8, the read side (transaction by id and by provider + external id, ledger cursor, reconciliation and trial balance).
+S8 is done (13 Nov), committed on the branch `feat/s8-read-side`. Next is S9, the SQS consumer.
 
-1. S7 reaches `main` through a pull request, as S1 to S6 did. Then `/sdd-implement S8` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
+1. S8 reaches `main` through a pull request, as S1 to S7 did. Then `/sdd-implement S9` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
 2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
 
 ## Phases
@@ -29,7 +29,7 @@ S7 is done (13 Nov), committed on the branch `feat/s7-pending-references`. Next 
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0 to S7 done; next is S8 |
+| 4 | Implementation, slice by slice | S0 to S8 done; next is S9 |
 
 ## Decisions confirmed by Matheus (12 Nov, unless dated)
 
@@ -173,6 +173,16 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **Test order within S4.** T2, T3, T4, T5, T6 and the replay cases of T7 were test-first and seen failing for the expected reason. Not seen failing: the two 409 cases of T7 (the unique-index backstop already answered 409 before the lookup existed) and T8 (the schema was written with the controller in T5); a mutation run (the `SYSTEM` refusal removed) made T8 fail with a 500, so it is not vacuous. T9 passes by construction of the unit of work. A mutation run without `PESSIMISTIC_WRITE` made the lock test fail.
 - **Not done:** concurrency across processes is S5; the in-process tests only prove the lock with two transactions and the backstop with two wallets.
 
+## Findings from S8 that later slices depend on
+
+- **Decisions of 13 Nov (docs/tasks/S8.md).** Q1: a divergence is counted now, in the in-process `Metrics` (`src/infrastructure/metrics/metrics.ts`, counter `wallet_reconciliation_divergences_total`); S11 exposes it in `/metrics`. Q2: the ADR-12 trial balance is `TRIAL_BALANCE` in `test/support/ledger-invariant.ts`, run by every suite, not an endpoint. Q3: transaction reads follow the `POST` balance rule (absent only for `WALLET_PLAYER_MISMATCH`, L-20). L-13 accepted.
+- **For S11.** `Metrics` is a plain Nest provider with `increment(name)` and `value(name)`, one set per instance; it is not an application port, because the divergence is counted at the HTTP edge next to its log line. S11 renders it (or replaces it with a registry) and adds the seven required metrics; `TestApp.metricValue(name)` reads it in tests. The log line is `wallet reconciliation divergence` at `error`, with `walletId` and `checkedEntries` and no amount. The counter counts reconciliations that found a divergence, not divergent wallets (S8 review, m7).
+- **Reads.** `WalletQueries` now serves the transaction queries, the ledger page and the reconciliation input, each on a fresh fork with no transaction and no lock ("reads never wait for the wallet lock"). Reconciliation is one SQL statement, so the stored balance and the ledger sums share a snapshot (a mutation with two statements fails the load test 3 out of 3, and the test proves its reads overlapped the writes). The ledger is a keyset on `UNIQUE (wallet_id, sequence)`; the endpoint reads `limit + 1` to answer `hasMore`, the cursor is bound to its wallet, and the last page keeps its cursor, so `hasMore` is the stop condition (L-13). S13's README must say so.
+- **Routes.** `WageringController` has no prefix now: `POST /wagering/transactions`, `GET /wagering/transactions/:transactionId`, `GET /providers/:providerId/wagering/transactions/:externalTransactionId`. A `REJECTED` row has no `processedAt` (domain rule), so the read omits it.
+- **Closed here:** the ADR-12 sentence on the `FOR KEY SHARE` lock (S2 review, m6).
+- **Test order within S8.** T1, T2 and T9 test-first and seen failing; T3 to T8 written first but first run after the code; the review fixes changed tests and code together. Mutation runs are listed in `docs/tasks/S8.md`.
+- **Independent review (13 Nov).** The `invariant-reviewer` found no blocker and no major. All nine minors fixed at Matheus's request (m1 to m9, listed in `docs/tasks/S8.md`): the two concurrent read tests now prove their overlap, a new test proves reads never wait for the wallet lock, the cursor is bound to its wallet, the `OPENING` is read through the transaction routes, and the import cycle is gone.
+
 ## Slices
 
 Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
@@ -189,13 +199,13 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | S5 | Multi-process harness and first concurrency tests | 13 Nov | 1.0 | done 13 Nov |
 | S6 | Reversals | 13 Nov | 1.5 | done 13 Nov |
 | S7 | Pending references | 13 Nov | 1.5 | done 13 Nov |
-| S8 | Read side | 13 Nov | 1.0 | todo |
+| S8 | Read side | 13 Nov | 1.0 | done 13 Nov |
 | S9 | SQS consumer | 14 Nov | 2.5 | todo |
 | S10 | Outbox publisher | 14 Nov | 2.0 | todo |
 | S11 | Observability and CI | 14 Nov | 1.0 | todo |
 | S12 | Failure modes | 14 Nov | 1.0 | todo |
 | S13 | Documentation and delivery | 14 Nov | 3.0 | todo |
-| — | Double-entry, folded into S2, S3, S4, S6, S8 | 13 Nov | +1.5 | todo |
+| — | Double-entry, folded into S2, S3, S4, S6, S8 | 13 Nov | +1.5 | done 13 Nov |
 
 - **Freeze:** end of the 8th hour on 14 Nov. Submit that night.
 - **Optional, only if ahead:** load test, Keycloak, OpenTelemetry.

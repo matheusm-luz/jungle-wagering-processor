@@ -1,12 +1,15 @@
 import type { AddressInfo } from 'node:net';
 import { createApp } from '../../src/bootstrap';
 import { type Env, loadEnv } from '../../src/config/env';
+import { Metrics } from '../../src/infrastructure/metrics/metrics';
 
 export interface TestApp {
   /** Base URL of the instance, on an ephemeral port. */
   readonly url: string;
   /** Every log line the instance wrote, parsed. */
   logs(): Record<string, unknown>[];
+  /** Current value of an in-process counter of this instance. */
+  metricValue(name: string): number;
   close(): Promise<void>;
 }
 
@@ -31,6 +34,7 @@ export async function startApp(overrides: Partial<Env> = {}): Promise<TestApp> {
 
   return {
     url: `http://127.0.0.1:${port}`,
+    metricValue: (name) => app.get(Metrics).value(name),
     logs: () => lines.map((line) => JSON.parse(line) as Record<string, unknown>),
     close: () => app.close(),
   };

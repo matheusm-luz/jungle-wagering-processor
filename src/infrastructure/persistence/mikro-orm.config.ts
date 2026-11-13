@@ -7,7 +7,9 @@ import { migrations } from './migrations';
 import { records } from './records';
 
 export function buildOrmConfig(
-  env: Pick<Env, 'DATABASE_URL' | 'DATABASE_CONNECT_TIMEOUT_MS'>,
+  // No lock timeout for the migrator: DDL at deploy time may wait for its locks.
+  env: Pick<Env, 'DATABASE_URL' | 'DATABASE_CONNECT_TIMEOUT_MS'> &
+    Partial<Pick<Env, 'DATABASE_LOCK_TIMEOUT_MS'>>,
   logger: JsonLogger,
   migrationsList: MigrationObject[] = migrations,
 ) {
@@ -15,7 +17,11 @@ export function buildOrmConfig(
     clientUrl: env.DATABASE_URL,
     // Passed to the `pg` pool. Bounds a connection attempt to a server that stopped answering,
     // which would otherwise hang its caller and, at shutdown, `orm.close()`.
-    driverOptions: { connectionTimeoutMillis: env.DATABASE_CONNECT_TIMEOUT_MS },
+    // `lock_timeout` goes in the startup packet of every connection: no extra round trip (ADR-01).
+    driverOptions: {
+      connectionTimeoutMillis: env.DATABASE_CONNECT_TIMEOUT_MS,
+      lock_timeout: env.DATABASE_LOCK_TIMEOUT_MS,
+    },
     // Explicit list, no globs.
     entities: records,
     // The application never creates its database; that is provisioning, not runtime.

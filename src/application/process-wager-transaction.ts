@@ -5,6 +5,7 @@ import { WagerTransaction, type WagerTransactionKind } from '../domain/wager-tra
 import {
   ExternalTransactionConflictError,
   IdempotencyKeyConflictError,
+  InboxMessageConflictError,
   InvalidWagerTransactionError,
   WalletNotFoundError,
 } from './errors';
@@ -35,6 +36,18 @@ export interface WagerTransactionResult {
   idempotentReplay: boolean;
 }
 
+/** The queue message behind a command: the inbox key (statement §10). */
+export interface InboxMessage {
+  consumerName: string;
+  messageId: string;
+}
+
+/**
+ * Over SQS two more answers exist, both committed and acknowledged: the message was already
+ * processed, or it names an unknown wallet and only its inbox row is kept (L-08).
+ */
+export type MessageResult = WagerTransactionResult | 'duplicate' | 'walletNotFound';
+
 /**
  * The critical section of ARCHITECTURE §2, shared by HTTP and SQS. Everything that does not need
  * the database happens before the transaction opens; inside it the wallet lock comes first, so
@@ -48,6 +61,22 @@ export class ProcessWagerTransaction {
   ) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<WagerTransactionResult> {
+    // Without a message neither `duplicate` nor `walletNotFound` is produced: the latter throws.
+    return (await this.process(command, undefined)) as WagerTransactionResult;
+  }
+
+  /** The SQS entry: the inbox row is the first write of the same transaction (ARCHITECTURE §2 step 4). */
+  executeMessage(
+    command: ProcessWagerTransactionCommand,
+    message: InboxMessage,
+  ): Promise<MessageResult> {
+    return this.process(command, message);
+  }
+
+  private async process(
+    command: ProcessWagerTransactionCommand,
+    message: InboxMessage | undefined,
+  ): Promise<MessageResult> {
     const receivedAt = this.clock.now();
     const { idempotencyKey, correlationId, ...fields } = command;
     const transaction = this.create({
@@ -59,9 +88,24 @@ export class ProcessWagerTransaction {
     });
     const entryId = this.ids.newId();
 
-    return this.unitOfWork.run(async (scope) => {
+    return this.unitOfWork.run(async (scope): Promise<MessageResult> => {
+      if (message !== undefined) {
+        // Before the wallet lock: a redelivery stops here, and commits nothing new.
+        const inbox = await scope.inbox.record({
+          ...message,
+          payloadHash: transaction.payloadHash,
+          at: receivedAt,
+        });
+        if (inbox === 'duplicate') return 'duplicate';
+        if (inbox === 'conflict') throw new InboxMessageConflictError();
+      }
+
       const wallet = await scope.wallets.lock(transaction.walletId);
-      if (wallet === undefined) throw new WalletNotFoundError();
+      if (wallet === undefined) {
+        // L-08: over SQS the inbox row commits alone, so a wallet created later never sees it.
+        if (message !== undefined) return 'walletNotFound';
+        throw new WalletNotFoundError();
+      }
 
       // Under the lock: a request for this wallet that committed before is visible now (ADR-01).
       const known = await scope.transactions.findByIdentity(transaction);

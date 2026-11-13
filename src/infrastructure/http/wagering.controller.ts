@@ -1,13 +1,12 @@
 import { Body, Controller, Get, Headers, Param, Post, Res } from '@nestjs/common';
 import type { Response } from 'express';
-import { z } from 'zod';
 import { GetTransaction } from '../../application/get-transaction';
 import { ProcessWagerTransaction } from '../../application/process-wager-transaction';
 import { FailureCode } from '../../domain/failure-code';
 import type { MoneyProps } from '../../domain/money';
 import {
   type WagerTransaction,
-  WagerTransactionKind,
+  type WagerTransactionKind,
   WagerTransactionStatus,
 } from '../../domain/wager-transaction';
 import { addLogContext, currentLogContext } from '../logging/log-context';
@@ -16,33 +15,10 @@ import {
   idempotencyKeySchema,
   identifierSchema,
   money,
-  moneySchema,
   parse,
   uuidSchema,
+  wagerSchema,
 } from './validation';
-
-/**
- * Closed field list (ADR-03): an unknown field is a 400, so nothing outside the hash can vary.
- * `OPENING` is internal. Which kinds require, accept or refuse a reference (L-18) is checked by
- * `WagerTransaction.create`, also a 400.
- */
-const wagerSchema = z.strictObject({
-  providerId: identifierSchema.refine((value) => value !== 'SYSTEM', 'is reserved'),
-  externalTransactionId: identifierSchema,
-  playerId: identifierSchema,
-  walletId: uuidSchema,
-  roundId: identifierSchema,
-  gameId: identifierSchema,
-  kind: z.enum([
-    WagerTransactionKind.Bet,
-    WagerTransactionKind.Win,
-    WagerTransactionKind.Loss,
-    WagerTransactionKind.Refund,
-    WagerTransactionKind.Rollback,
-  ]),
-  money: moneySchema,
-  referenceExternalTransactionId: identifierSchema.optional(),
-});
 
 /** ADR-06: the status comes from the persisted state, so a replay answers like the first call. */
 const HTTP_STATUS: Partial<Record<WagerTransactionStatus, number>> = {

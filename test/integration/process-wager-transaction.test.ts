@@ -1,10 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import type { MikroORM } from '@mikro-orm/postgresql';
 import type { SQL } from 'bun';
+import { InboxMessageConflictError } from '../../src/application/errors';
 import type { UnitOfWork } from '../../src/application/ports';
 import { ProcessWagerTransaction } from '../../src/application/process-wager-transaction';
 import { Money } from '../../src/domain/money';
-import { WagerTransactionKind } from '../../src/domain/wager-transaction';
+import { WagerTransactionKind, WagerTransactionStatus } from '../../src/domain/wager-transaction';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { migratedDatabase } from '../support/database';
 import { expectLedgerInvariant } from '../support/ledger-invariant';
@@ -134,6 +135,136 @@ describe('ProcessWagerTransaction', () => {
       transactions: 0,
       entries: 1,
       events: 0,
+    });
+  });
+});
+
+describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () => {
+  const inbox = () => ({ consumerName: 'wager-transactions', messageId: `msg-${newId()}` });
+
+  async function bet(walletAmount = '100.00') {
+    const { wallet } = await seedWallet(sql, walletAmount);
+    const externalTransactionId = `tx-${newId()}`;
+    return {
+      walletId: wallet.id as string,
+      command: {
+        idempotencyKey: `provider-s9:${externalTransactionId}`,
+        providerId: 'provider-s9',
+        externalTransactionId,
+        playerId: wallet.player_id as string,
+        walletId: wallet.id as string,
+        roundId: 'round-1',
+        gameId: 'game-1',
+        kind: WagerTransactionKind.Bet,
+        money: Money.from({ amount: '30.00', currency: 'BRL' }),
+        correlationId: 'msg-correlation',
+      },
+    };
+  }
+
+  const effects = async (walletId: string, messageId: string) => {
+    const [state] = await sql`
+      select w.balance,
+             (select count(*)::int from wager_transactions t where t.wallet_id = w.id and t.kind = 'BET') as bets,
+             (select count(*)::int from inbox_messages i where i.message_id = ${messageId}) as inbox
+        from wallets w where w.id = ${walletId}`;
+    return state;
+  };
+
+  test('a message is applied once with its inbox row; the same message again is a duplicate with no second effect', async () => {
+    const useCase = new ProcessWagerTransaction(
+      new MikroOrmUnitOfWork(orm, { newId }),
+      { now: () => new Date() },
+      { newId },
+    );
+    const { walletId, command } = await bet();
+    const message = inbox();
+
+    const first = await useCase.executeMessage(command, message);
+    const again = await useCase.executeMessage(command, message);
+
+    expect(typeof first === 'object' ? first.transaction.status : first).toBe(
+      WagerTransactionStatus.Processed,
+    );
+    expect(again).toBe('duplicate');
+    expect(await effects(walletId, message.messageId)).toEqual({
+      balance: '70.00',
+      bets: 1,
+      inbox: 1,
+    });
+  });
+
+  test('the same message id with another payload is an InboxMessageConflictError', async () => {
+    const useCase = new ProcessWagerTransaction(
+      new MikroOrmUnitOfWork(orm, { newId }),
+      { now: () => new Date() },
+      { newId },
+    );
+    const { walletId, command } = await bet();
+    const message = inbox();
+    await useCase.executeMessage(command, message);
+
+    const other = { ...command, money: Money.from({ amount: '31.00', currency: 'BRL' }) };
+    await expect(useCase.executeMessage(other, message)).rejects.toBeInstanceOf(
+      InboxMessageConflictError,
+    );
+    expect(await effects(walletId, message.messageId)).toEqual({
+      balance: '70.00',
+      bets: 1,
+      inbox: 1,
+    });
+  });
+
+  test('a message for an unknown wallet commits only its inbox row (L-08)', async () => {
+    const useCase = new ProcessWagerTransaction(
+      new MikroOrmUnitOfWork(orm, { newId }),
+      { now: () => new Date() },
+      { newId },
+    );
+    const { command } = await bet();
+    const message = inbox();
+    const unknown = { ...command, walletId: newId() };
+
+    expect(await useCase.executeMessage(unknown, message)).toBe('walletNotFound');
+    expect(await useCase.executeMessage(unknown, message)).toBe('duplicate');
+    const [rows] = await sql`
+      select (select count(*)::int from inbox_messages where message_id = ${message.messageId}) as inbox,
+             (select count(*)::int from wager_transactions
+               where external_transaction_id = ${command.externalTransactionId}) as transactions`;
+    expect(rows).toEqual({ inbox: 1, transactions: 0 });
+  });
+
+  test('a failure after the inbox insert rolls the inbox row back with the effects', async () => {
+    const real = new MikroOrmUnitOfWork(orm, { newId });
+    const failingAfterOutbox: UnitOfWork = {
+      run: (work) =>
+        real.run((scope) =>
+          work({
+            ...scope,
+            outbox: {
+              enqueue: async (events) => {
+                await scope.outbox.enqueue(events);
+                throw new Error('injected failure before commit');
+              },
+            },
+          }),
+        ),
+    };
+    const failing = new ProcessWagerTransaction(
+      failingAfterOutbox,
+      { now: () => new Date() },
+      { newId },
+    );
+    const { walletId, command } = await bet();
+    const message = inbox();
+
+    await expect(failing.executeMessage(command, message)).rejects.toThrow(
+      'injected failure before commit',
+    );
+    expect(await effects(walletId, message.messageId)).toEqual({
+      balance: '100.00',
+      bets: 0,
+      inbox: 0,
     });
   });
 });

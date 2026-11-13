@@ -60,6 +60,9 @@ services:
       context: .
       target: runtime
     environment: *app-environment
+    # SIGTERM: the open long poll (SQS_WAIT_TIME_S) and in-flight messages (SQS_SHUTDOWN_GRACE_MS)
+    # end in parallel, then connections close; Docker's default 10 s would cut that short (R-56).
+    stop_grace_period: 30s
     ports:
       # A range, so `docker compose up --scale app=3` can publish one host port per instance.
       - "3000-3002:3000"
@@ -85,6 +88,9 @@ services:
       <<: *app-environment
       DATABASE_URL: postgresql://wagering:wagering@postgres:5432/wagering_test
       LOG_LEVEL: silent
+      # Every app the suites start, in process or spawned, waits for its open long poll on
+      # shutdown (R-56): a short one keeps each close under a second.
+      SQS_WAIT_TIME_S: "1"
     depends_on:
       postgres:
         condition: service_healthy

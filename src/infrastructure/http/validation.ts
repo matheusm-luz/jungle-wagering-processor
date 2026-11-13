@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { InvalidMoneyError } from '../../domain/errors';
 import { Money, type MoneyProps } from '../../domain/money';
+import { WagerTransactionKind } from '../../domain/wager-transaction';
 import { RequestValidationError } from './request-validation.error';
 
 /**
@@ -58,3 +59,26 @@ export function money(field: string, props: MoneyProps): Money {
 export const idempotencyKeySchema = z
   .string()
   .regex(/^[\x21-\x7E]{1,256}$/, 'must be 1 to 256 visible ASCII characters');
+
+/**
+ * The wager request, over HTTP and inside an SQS message. Closed field list (ADR-03): an unknown
+ * field is a 400, so nothing outside the hash can vary. `OPENING` is internal. Which kinds require, accept or refuse a reference (L-18) is checked by
+ * `WagerTransaction.create`, also a 400.
+ */
+export const wagerSchema = z.strictObject({
+  providerId: identifierSchema.refine((value) => value !== 'SYSTEM', 'is reserved'),
+  externalTransactionId: identifierSchema,
+  playerId: identifierSchema,
+  walletId: uuidSchema,
+  roundId: identifierSchema,
+  gameId: identifierSchema,
+  kind: z.enum([
+    WagerTransactionKind.Bet,
+    WagerTransactionKind.Win,
+    WagerTransactionKind.Loss,
+    WagerTransactionKind.Refund,
+    WagerTransactionKind.Rollback,
+  ]),
+  money: moneySchema,
+  referenceExternalTransactionId: identifierSchema.optional(),
+});

@@ -40,6 +40,15 @@ export interface PendingTransaction {
   correlationId: string | undefined;
 }
 
+/** One queue message as the inbox keys it (statement §10: `(consumerName, messageId)`). */
+export interface InboxRecord {
+  consumerName: string;
+  messageId: string;
+  /** The transaction's payload hash (ADR-03): the same id with another payload is a conflict. */
+  payloadHash: string;
+  at: Date;
+}
+
 /**
  * The reads and writes available inside one SQL transaction. Each call reaches the database before it
  * returns, in the order it is called, so a constraint violation surfaces at the write that caused it.
@@ -82,6 +91,13 @@ export interface TransactionScope {
   };
   outbox: {
     enqueue(events: readonly IntegrationEvent<object>[]): Promise<void>;
+  };
+  inbox: {
+    /**
+     * Inserts the message. A second record of the same message waits until the first transaction
+     * ends, then answers `duplicate` (same hash) or `conflict` (another hash).
+     */
+    record(message: InboxRecord): Promise<'new' | 'duplicate' | 'conflict'>;
   };
 }
 

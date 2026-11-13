@@ -37,8 +37,9 @@ function translate(error: unknown): unknown {
 
 /**
  * Each `run` forks its own `EntityManager` (ADR-13) and opens one transaction at the server's
- * default `READ COMMITTED`. Every write flushes before it returns: the records have no ORM
- * relations, so the call order is the foreign-key order and nothing waits for a final flush.
+ * default `READ COMMITTED`. Every write reaches the database before it returns: the records have
+ * no ORM relations, so the call order is the foreign-key order. A throw anywhere in `work` rolls
+ * every write back.
  */
 @Injectable()
 export class MikroOrmUnitOfWork implements UnitOfWork {
@@ -55,19 +56,21 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
     }
   }
 
+  /**
+   * Inserts are native (`em.insert`): one `INSERT` on the transaction's connection, sent before the
+   * call returns, with no identity map and no change set to flush later.
+   */
   private scope(em: EntityManager): TransactionScope {
-    const write = async (entity: object) => {
-      em.persist(entity);
-      await em.flush();
-    };
-
     return {
       wallets: {
-        insert: (wallet) => write(em.create(WalletRecord, toWalletRecord(wallet))),
+        insert: async (wallet) => {
+          await em.insert(WalletRecord, toWalletRecord(wallet));
+        },
       },
       transactions: {
-        insert: (transaction) =>
-          write(em.create(WagerTransactionRecord, toWagerTransactionRecord(transaction))),
+        insert: async (transaction) => {
+          await em.insert(WagerTransactionRecord, toWagerTransactionRecord(transaction));
+        },
       },
       ledger: {
         append: async (entry, counterparty) => {
@@ -77,15 +80,13 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
             entry.money.currency,
             entry.createdAt,
           );
-          await write(em.create(LedgerEntryRecord, toLedgerEntryRecord(entry, accountId)));
+          await em.insert(LedgerEntryRecord, toLedgerEntryRecord(entry, accountId));
         },
       },
       outbox: {
         enqueue: async (events) => {
-          for (const event of events) {
-            em.persist(em.create(OutboxMessageRecord, toOutboxMessageRecord(event)));
-          }
-          await em.flush();
+          if (events.length === 0) return;
+          await em.insertMany(OutboxMessageRecord, events.map(toOutboxMessageRecord));
         },
       },
     };

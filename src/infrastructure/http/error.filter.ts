@@ -1,4 +1,4 @@
-import { type ArgumentsHost, BadRequestException, Catch, HttpException } from '@nestjs/common';
+import { type ArgumentsHost, BadRequestException, Catch } from '@nestjs/common';
 import { BaseExceptionFilter } from '@nestjs/core';
 import type { Response } from 'express';
 import { ApplicationError } from '../../application/errors';
@@ -18,7 +18,8 @@ export interface ErrorResponse {
 
 /**
  * Answers application and validation errors as `{ code, message }` with the status of
- * ARCHITECTURE §6. A body that is not valid JSON is a `VALIDATION_ERROR` too. Everything else goes
+ * ARCHITECTURE §6. A body that is not valid JSON, or a path that cannot be decoded, is a
+ * `VALIDATION_ERROR` too. Everything else goes
  * to Nest's default handling, so health checks keep their own body and an unexpected error is a
  * 500 that reveals nothing.
  */
@@ -41,15 +42,15 @@ export class ErrorFilter extends BaseExceptionFilter {
         return [status, { code: exception.code, message: exception.message }];
       }
     }
-    // Raised by the JSON body parser; its message would echo part of the body, so it is replaced.
-    if (exception instanceof BadRequestException && isBodyParseError(exception)) {
-      return [400, { code: 'VALIDATION_ERROR', message: 'Body is not valid JSON' }];
+    // Nest's Express adapter wraps exactly two request errors of status 400 this way: a body that
+    // is not valid JSON (SyntaxError) and a path parameter with invalid percent-encoding (URIError).
+    // Their messages echo part of the request, so a generic one replaces them.
+    if (
+      exception instanceof BadRequestException &&
+      (exception.cause instanceof SyntaxError || exception.cause instanceof URIError)
+    ) {
+      return [400, { code: 'VALIDATION_ERROR', message: 'Invalid request' }];
     }
     return undefined;
   }
-}
-
-function isBodyParseError(exception: HttpException): boolean {
-  const cause = exception.cause as { type?: string } | undefined;
-  return cause?.type === 'entity.parse.failed' || exception.message.includes('JSON');
 }

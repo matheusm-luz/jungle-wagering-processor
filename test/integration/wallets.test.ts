@@ -248,7 +248,8 @@ describe('GET /wallets/:walletId', () => {
   });
 
   test('an id that is not a UUID is 400 VALIDATION_ERROR, not a database error', async () => {
-    for (const id of ['not-a-uuid', '123', `${newId()}x`]) {
+    // `%FF` is not valid percent-encoding: Express fails to decode it before the route runs.
+    for (const id of ['not-a-uuid', '123', `${newId()}x`, '%FF']) {
       const response = await fetch(`${app.url}/wallets/${id}`);
 
       expect({ id, status: response.status }).toEqual({ id, status: 400 });

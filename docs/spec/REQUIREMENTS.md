@@ -24,7 +24,7 @@ Requirement types:
 | R-02 | 4 | TC | PostgreSQL; SQS through LocalStack or MiniStack; Docker Compose | done — `compose.yaml`; `test/integration/health.test.ts` "is 200 with PostgreSQL and SQS up" |
 | R-03 | 4 | TC | Versioned, reversible migrations | in progress — runner proven by `test/integration/migration-runner.test.ts`; the schema migrations are S2 |
 | R-04 | 4 | TC | MikroORM (preferred) or TypeORM; no Prisma | pending |
-| R-05 | 5.1 | IC | Money is never a `number`, float or double | pending |
+| R-05 | 5.1 | IC | Money is never a `number`, float or double | in progress — domain: `test/unit/domain/money.test.ts` "rejects an amount that is not a string", "serialises to MoneyProps with a fixed scale of two"; columns and DTOs are S2 to S4 |
 | R-06 | 5.2 | IC | Idempotency is never guaranteed by an in-memory cache | pending |
 | R-07 | 5.3, 8 | IC | Broker FIFO and deduplication are an optimisation; the database is the guarantee | pending |
 | R-08 | 5.4 | IC | No event is published before the financial transaction commits | pending |
@@ -34,20 +34,20 @@ Requirement types:
 | R-12 | 5.8, 8 | IC | Correct with three or more application instances | pending |
 | R-13 | 5.9 | IC | Uniqueness, immutability and non-negativity enforced in the database schema | pending |
 | R-14 | 3 | IC | No duplicated credit or debit, no lost confirmed event, no negative balance | pending |
-| R-15 | 6.0 | TC | Private constructors and static factories; `rehydrate` does not re-validate transitions | pending |
-| R-16 | 6.1 | BR | `Money` is immutable; decimal string with a fixed scale of 2 | pending |
-| R-17 | 6.1 | BR | `Money` rejects NaN, Infinity, scientific notation, empty string, more than 2 decimals, negative input | pending |
-| R-18 | 6.1 | BR | Operations across currencies raise a domain error; the model stays multi-currency | pending |
-| R-19 | 6.1 | TC | Domain has no ORM types and no NestJS decorators; persistence is exact | pending |
+| R-15 | 6.0 | TC | Private constructors and static factories; `rehydrate` does not re-validate transitions | done — private constructors: `test/unit/domain/factories.test.ts` "can only be built through their static factories", a compile-time assertion that breaks `bun run typecheck` if a constructor becomes public; "rehydrate restores state without validating" (`test/unit/domain/wallet.test.ts`), "rehydrate restores any state without validating" (`wager-transaction.test.ts`), "rehydrate rebuilds without validating" (`wallet-ledger-entry.test.ts`) |
+| R-16 | 6.1 | BR | `Money` is immutable; decimal string with a fixed scale of 2 | done — `test/unit/domain/money.test.ts` "every operation returns a new instance and the operands are unchanged", "is frozen", "serialises to MoneyProps with a fixed scale of two", "adds and subtracts without rounding" |
+| R-17 | 6.1 | BR | `Money` rejects NaN, Infinity, scientific notation, empty string, more than 2 decimals, negative input | done — `test/unit/domain/money.test.ts` "rejects NaN, Infinity, scientific notation, empty string and malformed input", "rejects fewer or more than two decimals", "rejects a negative amount on input" |
+| R-18 | 6.1 | BR | Operations across currencies raise a domain error; the model stays multi-currency | done — `test/unit/domain/money.test.ts` "operations across currencies throw CurrencyMismatchError"; `wallet.test.ts` "a movement in another currency throws CurrencyMismatchError and changes nothing" |
+| R-19 | 6.1 | TC | Domain has no ORM types and no NestJS decorators; persistence is exact | in progress — domain side: `test/unit/domain/purity.test.ts`; exact persistence is S2 and S3 |
 | R-20 | 6.2 | BR | At most one wallet per `playerId` + `currency` | pending |
-| R-21 | 6.2 | BR | Balance is never negative | pending |
-| R-22 | 6.2 | BR | Every balance change has exactly one ledger entry, and vice versa | pending |
-| R-23 | 6.2 | BR | Operation currency equals wallet currency | pending |
-| R-24 | 6.2 | BR | `version` starts at 1 and increments only when the balance changes | pending |
-| R-25 | 6.3 | BR | Explicit transitions; `PROCESSED`, `REJECTED` and `FAILED` are terminal | pending |
-| R-26 | 6.3 | BR | `OPENING` is internal: refused by the API and by the queue | pending |
-| R-27 | 6.4 | BR | Ledger entry is structurally immutable; `create` validates the arithmetic | pending |
-| R-28 | 6.4 | BR | At most one ledger entry per transaction and wallet; `LOSS` and `REJECTED` create none | pending |
+| R-21 | 6.2 | BR | Balance is never negative | in progress — aggregate: `test/unit/domain/wallet.test.ts` "debit above the balance throws InsufficientFundsError and changes nothing"; the `CHECK` is S2, the race is S5 |
+| R-22 | 6.2 | BR | Every balance change has exactly one ledger entry, and vice versa | in progress — aggregate: `test/unit/domain/wallet.test.ts` "the balance always equals the balance rebuilt from the returned entries"; persistence is S3 and S4 |
+| R-23 | 6.2 | BR | Operation currency equals wallet currency | in progress — aggregate: `test/unit/domain/wallet.test.ts` "a movement in another currency throws CurrencyMismatchError and changes nothing"; the `CURRENCY_MISMATCH` rejection is S4 |
+| R-24 | 6.2 | BR | `version` starts at 1 and increments only when the balance changes | in progress — aggregate: `test/unit/domain/wallet.test.ts`, opening and movement cases; the persisted version is S3 and S4 |
+| R-25 | 6.3 | BR | Explicit transitions; `PROCESSED`, `REJECTED` and `FAILED` are terminal | done — `test/unit/domain/wager-transaction.test.ts` "allows exactly the transitions of ARCHITECTURE §5", "PROCESSED, REJECTED and FAILED are terminal", "a failed transition changes nothing" |
+| R-26 | 6.3 | BR | `OPENING` is internal: refused by the API and by the queue | in progress — domain: `test/unit/domain/wager-transaction.test.ts` "OPENING is not submittable"; the API refusal is S4, the queue is S9 |
+| R-27 | 6.4 | BR | Ledger entry is structurally immutable; `create` validates the arithmetic | done — `test/unit/domain/wallet-ledger-entry.test.ts` "is frozen", "copies the date it is given and exposes one that cannot change it", "rejects broken arithmetic", "creates a balanced debit and a balanced credit" |
+| R-28 | 6.4 | BR | At most one ledger entry per transaction and wallet; `LOSS` and `REJECTED` create none | in progress — domain: `test/unit/domain/wager-transaction.test.ts` "affectsBalance is false only for LOSS"; the unique index is S2, the use case is S4 |
 | R-29 | 6.5, 11 | IC | Transaction, balance, ledger, inbox and outbox in the same SQL transaction | pending |
 | R-30 | 7 | BR | `BET` debits; rejected when the balance is insufficient | pending |
 | R-31 | 7 | BR | `WIN` credits; may reference the `BET` of the same round | pending |
@@ -81,7 +81,7 @@ Requirement types:
 | R-59 | 11 | TC | Abstract `IntegrationEvent` envelope with one concrete subclass per event; `data` carries `MoneyProps` | pending |
 | R-60 | 12 | TC | JSON logs with `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; no full financial payloads | in progress — logger and correlation id: `test/unit/logging/json-logger.test.ts`, `test/integration/correlation.test.ts`; the payload-leak audit is S11 |
 | R-61 | 12 | TC | Metrics: transactions by status, duplicates, retries, DLQ messages, lock conflicts, outbox lag, processing latency | pending |
-| R-62 | 13 | MT | Unit: `Money`, `Wallet` invariants, rules of the five operations, currency conflict, divergent payload | pending |
+| R-62 | 13 | MT | Unit: `Money`, `Wallet` invariants, rules of the five operations, currency conflict, divergent payload | in progress — `Money`, `Wallet` invariants and currency conflict: `test/unit/domain/`; the rules of the five operations are S4 and S6, the divergent payload is S4 |
 | R-63 | 13 | MT | Integration on real containers: migrations and constraints, atomicity, inbox and redelivery, concurrent publishers, retry and DLQ, restart recovery | pending |
 | R-64 | 13 | MT | Same bet sent 50 times in parallel → a single debit | pending |
 | R-65 | 13 | MT | Concurrent operations competing for one wallet (balance 100, two bets of 80) | pending |
@@ -135,4 +135,6 @@ The statement requires every additional interpretation to be documented. `accept
 | L-13 | Order of the ledger cursor. | Ascending per-wallet sequence, encoded as base64url. | proposed |
 | L-14 | Event ordering with several publishers. | No global order; consumers use `walletVersion` and `eventId`. | proposed |
 | L-15 | Origin of `correlationId`. | `X-Correlation-Id` header or generated; stored on the transaction so worker-emitted events keep it. | proposed |
-| L-16 | Currencies that do not use two decimals (JPY, KWD). | Out of scope; an allow-list of currencies. | proposed |
+| L-16 | Currencies that do not use two decimals (JPY, KWD). | **Accepted (B):** no list of currencies. `Money` accepts any ISO-4217 code by shape, three uppercase letters, and handles every currency at a scale of two; the challenge itself runs in `BRL` (statement §6.1). Currencies with another minor unit are a documented limitation. Rejected alternatives: a fixed allow-list in the domain (`BRL`, `USD`, `EUR`); a configurable list defaulting to `BRL`, validated at the API. | accepted |
+| L-17 | L-02 fixes the scale but not the rest of the amount format: is `"+25.00"`, `"025.00"` or an amount larger than the column valid? | **Accepted:** one amount has one spelling: digits, a dot and two decimals; no sign, no whitespace, no leading zeros, at most 17 integer digits (the range of `NUMERIC(19,2)`). Anything else is an invalid `Money`. | accepted |
+| L-18 | Rule 7.1 says which kinds require a reference, not which may carry one. | **Accepted:** `REFUND` and `ROLLBACK` require it; `WIN` and `LOSS` accept it (L-09); `BET` and `OPENING` refuse it, because a reference would enter the hash and has no meaning there. Refused at creation, so it is an invalid request, not a persisted rejection. A transaction that references itself is refused the same way. | accepted |

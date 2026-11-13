@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** approved by Matheus on 13 Nov 2026; every decision below was taken by him on 12 Nov. Nothing here is implemented yet.
+**Status:** approved by Matheus on 13 Nov 2026; every decision below was taken by him on 12 Nov. What is already implemented is tracked slice by slice in [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ## 1. Shape of the system
 
@@ -163,6 +163,7 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
   - `ledger_accounts` holds system accounts only: `FUNDING` per currency, the source of opening balances, and `PROVIDER_SETTLEMENT` per provider and currency, the counterparty of gameplay. A provider account is created on first use with `INSERT … ON CONFLICT DO NOTHING`.
   - Every `wallet_ledger_entries` row carries `counterparty_account_id`. `DEBIT` debits the wallet and credits the counterparty; `CREDIT` does the opposite. One row is one balanced posting.
   - `OPENING` posts against `FUNDING`. `BET`, `WIN`, `REFUND` and `ROLLBACK` post against the provider's settlement account.
+  - The rule that picks the counterparty lives in the domain, as a query on `WagerTransaction` that names the kind of account (and the provider, for a settlement account). The repository resolves it to the account row when it inserts the entry; `Wallet` and `WalletLedgerEntry` do not carry an account id.
   - System accounts have no balance column and are never locked. Their balance is an aggregate over the ledger; for a provider it is bets minus wins, net of reversals.
 - **Consequences.** There is no state in which debits and credits differ, so no trigger is needed. The rule of at most one entry per wallet per transaction still holds, and the concurrency design is untouched because no shared row is written. A trial-balance check compares, per currency, the sum of the materialised wallet balances with the net of the ledger: a global version of the per-wallet reconciliation. Trade-off: this is a transfer-style ledger, not a journal with separate debit and credit lines, so a wallet-to-wallet transfer would need a second posting. (b) was not chosen because it costs about twice as much and its errors surface only at `COMMIT`.
 
@@ -223,6 +224,9 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 | L-02 | Amounts must have exactly two decimals; `"25"` and `"25.5"` are 400. |
 | L-03 | `BET`, `WIN`, `REFUND` and `ROLLBACK` require a positive amount. `LOSS` and the opening balance accept zero. |
 | L-08 | A transaction for an unknown wallet is not persisted: 404 over HTTP; on SQS, ack with log, metric and inbox row. |
+| L-16 | A currency is any ISO-4217 code by shape, three uppercase letters, with no allow-list; every currency is handled at a scale of two. The challenge runs in `BRL`, the model stays multi-currency. |
+| L-17 | One amount has one spelling: digits, a dot and two decimals, with no sign, no whitespace, no leading zeros and at most 17 integer digits, the range of `NUMERIC(19,2)`. |
+| L-18 | `REFUND` and `ROLLBACK` require a reference; `WIN` and `LOSS` accept one; `BET` and `OPENING` refuse one. A transaction cannot reference itself. Violations are invalid requests, not persisted rejections. |
 
 The remaining proposed interpretations are listed in [docs/spec/REQUIREMENTS.md](docs/spec/REQUIREMENTS.md) and move here as they are confirmed.
 
@@ -235,7 +239,7 @@ The remaining proposed interpretations are listed in [docs/spec/REQUIREMENTS.md]
 
 ## 9. Known limitations
 
-- Fixed scale of two decimals: currencies such as JPY or KWD are out of scope.
+- Fixed scale of two decimals for every currency. A code is validated by shape only, so a currency with another minor unit, such as JPY or KWD, is accepted and handled at two decimals, which is wrong for it; those currencies are out of scope.
 - A `WIN` without a reference is credited without requiring a `BET` in the round.
 - No global ordering of events; ordering is per wallet and best-effort across publisher batches.
 - A hot wallet is processed serially by design; its throughput is bounded by the duration of one transaction.

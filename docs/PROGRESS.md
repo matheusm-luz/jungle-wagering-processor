@@ -16,10 +16,11 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S0 is done (13 Nov, 00:26). Next is S1, the domain core.
+S1 is done (13 Nov), on the branch `feat/s1-domain-core`. Next is S2, schema and migrations.
 
-1. `/sdd-implement S1` in what is left of the night session (1.5h, no Docker needed), then S2. The workflow commands are listed in `CLAUDE.md`.
-2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
+1. S1 reaches `main` through a pull request (Matheus's choice, 13 Nov). Merge it, update the local `main`, then `/sdd-implement S2`. The workflow commands are listed in `CLAUDE.md`.
+2. Matheus decided L-16, L-17 and L-18 on 13 Nov, and where the counterparty rule of ADR-12 lives (see the findings from S1).
+3. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
 
 ## Phases
 
@@ -29,9 +30,9 @@ S0 is done (13 Nov, 00:26). Next is S1, the domain core.
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0 done; next is S1 |
+| 4 | Implementation, slice by slice | S0 and S1 done; next is S2 |
 
-## Decisions confirmed by Matheus (12 Nov)
+## Decisions confirmed by Matheus (12 Nov, unless dated)
 
 Full reasoning in [ARCHITECTURE.md](../ARCHITECTURE.md).
 
@@ -53,6 +54,9 @@ Full reasoning in [ARCHITECTURE.md](../ARCHITECTURE.md).
 | L-02 | Amount format | Exactly two decimals |
 | L-03 | Zero amounts | Positive for `BET`, `WIN`, `REFUND`, `ROLLBACK`; zero allowed for `LOSS` and opening balance |
 | L-08 | Unknown wallet | Not persisted: 404 over HTTP; ack with log, metric and inbox row on SQS |
+| L-16 | Currencies (13 Nov) | Any ISO-4217 code by shape, no allow-list; scale of two for all; the challenge runs in `BRL` |
+| L-17 | Amount spelling (13 Nov) | No sign, no whitespace, no leading zeros, at most 17 integer digits |
+| L-18 | Reference by kind (13 Nov) | Required for `REFUND` and `ROLLBACK`, accepted for `WIN` and `LOSS`, refused for `BET` and `OPENING`; no self-reference |
 
 Other answers: latest majors of the stack; repository documents in English, with `README.pt-BR.md` and `ARCHITECTURE.pt-BR.md` generated once at the freeze; Biome; delivery through the form (repository link, application e-mail, optional notes).
 
@@ -102,6 +106,25 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **Ledger-invariant helper.** No S0 test can assert the ledger invariant, because the tables arrive in S2. The shared helper is due with the first test that writes a wallet (S3).
 - **Requirements with no slice in `PLAN.md`:** R-51 (the no-op `AuthGuard` and `ProviderIdentityPort` of ADR-08 need code, and the health endpoints must stay outside the guard) and the cross-cutting R-04 to R-07, R-10 to R-12, R-62 and R-69. To be assigned through `/sdd-plan`.
 
+## Findings from S1 that later slices depend on
+
+- **The domain takes ids and time from the caller.** `Wallet.open`, `debit` and `credit` receive the entry id, the transaction id and `at`, so the domain has no port. The id generator and the clock are application ports, due in S3.
+- **`Wallet.open` returns `{ wallet, openingEntry }`.** The entry is `undefined` for a zero balance. S3 creates and persists the `OPENING` transaction only when the entry exists, and must choose the provider id, external id and idempotency key of that internal transaction.
+- **A ledger entry carries `sequence`,** the wallet version it produced. S2 needs the column and `UNIQUE (wallet_id, sequence)`.
+- **A transaction carries `observedBalance`** (ADR-03), set by `markProcessed`, `markPendingReference` and `reject`; `fail` leaves it as it was. Its currency is the wallet's, which differs from the transaction's own currency on a `CURRENCY_MISMATCH` rejection. S2 has to store it so that it rehydrates exactly.
+- **`reject` does not record the resolved reference id.** S6 decides whether a rejection found by the reference rules should keep it for audit.
+- **`Wallet.debit` throws one error, `InsufficientFundsError`.** The use case maps it to `INSUFFICIENT_FUNDS` (S4) or `REVERSAL_WOULD_OVERDRAW` (S6).
+- **`Wallet.credit` can throw `MoneyOutOfRangeError`** when the new balance would exceed `NUMERIC(19,2)`. It is reachable with valid input (two maximum credits) and is deliberately not an `InvalidMoneyError`, so it cannot be answered as a 400 that depends on the balance. ARCHITECTURE §6 has no code for it: S4 must decide the outcome, through `/sdd-plan`.
+- **A wallet opened with a zero balance has its first entry at `sequence` 2,** because it is already at version 1. The ledger cursor of S8 must not assume that sequences start at 1.
+- **`reject` refuses `PROCESSING_FAILED` and `fail` accepts only it.** `ledgerDirectionFor` refuses a transaction that is not the declared reference (same provider, declared external id).
+- **The domain checks few strings.** `WagerTransaction.create` refuses an empty `idempotencyKey`, `providerId` or `externalTransactionId`, and a self-reference. Length, charset and the other identifiers are the job of the request schema in S4.
+- **Mappers of S3 must convert `NULL` to `undefined`.** Every optional check in the domain is `=== undefined`; a `null` would count as a declared reference. Typed mappers without casts make the compiler catch it. `version` and `sequence` are `number` in the domain, so their columns are `INTEGER`, not `BIGINT` (which the driver returns as a string).
+- **`Money.from` refuses a negative amount and a malformed currency code,** and it is also the rehydration path. Balances are safe (`CHECK (balance >= 0)`); the reconciliation difference of S8 must come from `subtract`, never from `Money.from`. The same holds for the trial balance of ADR-12: the net of a `PROVIDER_SETTLEMENT` account is bets minus wins and can be negative, so SQL returns the debit and credit sums separately (both non-negative) and the domain subtracts. A sum can also exceed 17 integer digits, which `Money.from` refuses. S2 may mirror the currency shape in a `CHECK (currency ~ '^[A-Z]{3}$')`.
+- **`Money.equals` across currencies is `false`, not an error;** `add`, `subtract` and `isLessThan` throw `CurrencyMismatchError`.
+- **Domain errors carry no failure code and no HTTP status.** The mapping to 400, 422 and the rest belongs to S3 and S4. The transport-level codes of ARCHITECTURE §6 (`VALIDATION_ERROR`, `WALLET_NOT_FOUND` and the others that are never persisted) are not in the domain `FailureCode`.
+- **Counterparty of ADR-12 (decided by Matheus, 13 Nov).** The rule "`OPENING` posts against `FUNDING`; `BET`, `WIN`, `REFUND` and `ROLLBACK` post against the settlement account of the provider" will be a domain query on `WagerTransaction`, unit-tested, added in S3 with its first use. The repository resolves it to `counterparty_account_id`; `WalletMovement` and `LedgerEntryState` stay as they are. Rejected: the account id on the ledger entry; the rule only in the persistence mapper.
+- **Integration events are not built yet,** although ARCHITECTURE §1 places them in the domain. They arrive with S4, as planned.
+
 ## Slices
 
 Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
@@ -111,7 +134,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | — | Environment, repository move, risk tests, private GitHub repository | 12 Nov | — | done |
 | — | Requirements, architecture, plan and workflow commands | 12–13 Nov | — | done, approved 13 Nov |
 | S0 | Scaffold and harness | 12 Nov | 1.5 | done 13 Nov |
-| S1 | Domain core | 13 Nov, night session | 1.5 | todo |
+| S1 | Domain core | 13 Nov, night session | 1.5 | done 13 Nov |
 | S2 | Schema and migrations | 13 Nov | 1.5 | todo |
 | S3 | Open and read a wallet | 13 Nov | 1.0 | todo |
 | S4 | `BET`, `WIN`, `LOSS` over HTTP | 13 Nov | 2.0 | todo |
@@ -131,7 +154,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 
 ## Environment
 
-- Repository: `C:\Projetos\JungleGaming\backend-challenge`, remote `origin` = private GitHub repository `jungle-wagering-processor`. `main` was pushed on 13 Nov, up to the S0 scaffold and the budget recalculation; later commits stay local until Matheus asks for a push.
+- Repository: `C:\Projetos\JungleGaming\backend-challenge`, remote `origin` = private GitHub repository `jungle-wagering-processor`. `main` was pushed on 13 Nov, up to the S0 scaffold and the budget recalculation; later commits stay local until Matheus asks for a push. S1 lives on the branch `feat/s1-domain-core`, pushed on 13 Nov with a pull request against `main`; it is not merged yet.
 - Bun 1.4.4, installed through npm. `D:\Programas\nvm\installs\v24.21.0` was added to the user PATH on 12 Nov; terminals opened before that need a restart.
-- Docker Desktop 29.9.3 with Compose v5.7.0. An already-open VS Code does not see the Docker CLI; restart VS Code.
+- Docker Desktop 29.9.3 with Compose v5.7.0. An already-open VS Code does not see the Docker CLI; restart VS Code. Docker Desktop was not running when S1 was verified: check that it is up before `test:integration`.
 - Images already pulled: `localstack/localstack:4.12`, `postgres:17-alpine`.

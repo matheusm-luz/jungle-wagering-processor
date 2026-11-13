@@ -59,8 +59,10 @@ export function toWallet(row: WalletRow): Wallet {
 
 // ---- Wager transaction
 
+/** A new row. A waiting one is due at once (S6, Q1); the worker owns attempts and backoff after that. */
 export function toWagerTransactionRecord(
   transaction: WagerTransaction,
+  correlationId?: string,
 ): RequiredEntityData<WagerTransactionRow> {
   return {
     id: transaction.id,
@@ -83,9 +85,9 @@ export function toWagerTransactionRecord(
     observedCurrency: transaction.observedBalance?.currency ?? null,
     processedAt: transaction.processedAt ?? null,
     referenceAttempts: 0,
-    // shortcut: a waiting row is due at once and only ever inserted; S7 owns attempts and backoff.
     nextAttemptAt:
       transaction.status === WagerTransactionStatus.PendingReference ? transaction.createdAt : null,
+    correlationId: correlationId ?? null,
     createdAt: transaction.createdAt,
   };
 }

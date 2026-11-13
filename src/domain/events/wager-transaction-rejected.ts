@@ -7,7 +7,10 @@ import {
   IntegrationEvent,
   type IntegrationEventProps,
 } from './integration-event';
-import type { WagerTransactionProcessedData } from './wager-transaction-processed';
+import {
+  transactionEventData,
+  type WagerTransactionProcessedData,
+} from './wager-transaction-processed';
 
 /** The data of `WagerTransactionProcessed` plus the code (docs/tasks/S4.md, Q2). */
 export interface WagerTransactionRejectedData extends WagerTransactionProcessedData {
@@ -30,7 +33,7 @@ export class WagerTransactionRejected extends IntegrationEvent<WagerTransactionR
     wallet: Wallet,
     ctx: EventContext,
   ): WagerTransactionRejected {
-    const { observedBalance, failureCode, referenceExternalTransactionId: reference } = transaction;
+    const { observedBalance, failureCode } = transaction;
     if (
       transaction.status !== WagerTransactionStatus.Rejected ||
       observedBalance === undefined ||
@@ -40,26 +43,11 @@ export class WagerTransactionRejected extends IntegrationEvent<WagerTransactionR
         'WagerTransactionRejected needs a REJECTED transaction',
       );
     }
-    if (transaction.walletId !== wallet.id) {
-      throw new InvalidIntegrationEventError('The wallet is not the wallet of the transaction');
-    }
 
     return new WagerTransactionRejected({
       ...ctx,
       aggregateId: wallet.id,
-      data: {
-        transactionId: transaction.id,
-        providerId: transaction.providerId,
-        externalTransactionId: transaction.externalTransactionId,
-        walletId: transaction.walletId,
-        playerId: transaction.playerId,
-        kind: transaction.kind,
-        money: transaction.money.toJSON(),
-        ...(reference === undefined ? {} : { referenceExternalTransactionId: reference }),
-        failureCode,
-        balance: observedBalance.toJSON(),
-        walletVersion: wallet.version,
-      },
+      data: { ...transactionEventData(transaction, observedBalance, wallet), failureCode },
     });
   }
 }

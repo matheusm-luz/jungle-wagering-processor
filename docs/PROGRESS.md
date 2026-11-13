@@ -16,9 +16,9 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S6 is done (13 Nov), committed on the branch `feat/s6-reversals`. Next is S7, pending references (worker, backoff, exhaustion, `WagerTransactionPendingReference`).
+S7 is done (13 Nov), committed on the branch `feat/s7-pending-references`. Next is S8, the read side (transaction by id and by provider + external id, ledger cursor, reconciliation and trial balance).
 
-1. S6 reaches `main` through a pull request, as S1 to S5 did. Then `/sdd-implement S7` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
+1. S7 reaches `main` through a pull request, as S1 to S6 did. Then `/sdd-implement S8` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
 2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
 
 ## Phases
@@ -29,7 +29,7 @@ S6 is done (13 Nov), committed on the branch `feat/s6-reversals`. Next is S7, pe
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0 to S6 done; next is S7 |
+| 4 | Implementation, slice by slice | S0 to S7 done; next is S8 |
 
 ## Decisions confirmed by Matheus (12 Nov, unless dated)
 
@@ -188,7 +188,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | S4 | `BET`, `WIN`, `LOSS` over HTTP | 13 Nov | 2.0 | done 13 Nov |
 | S5 | Multi-process harness and first concurrency tests | 13 Nov | 1.0 | done 13 Nov |
 | S6 | Reversals | 13 Nov | 1.5 | done 13 Nov |
-| S7 | Pending references | 13 Nov | 1.5 | todo |
+| S7 | Pending references | 13 Nov | 1.5 | done 13 Nov |
 | S8 | Read side | 13 Nov | 1.0 | todo |
 | S9 | SQS consumer | 14 Nov | 2.5 | todo |
 | S10 | Outbox publisher | 14 Nov | 2.0 | todo |
@@ -224,3 +224,15 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 - **For S7.** A `PENDING_REFERENCE` row is only ever inserted; S7 owns the attempts and the backoff (`shortcut:` in `toWagerTransactionRecord`) and the `WagerTransactionPendingReference` event (`shortcut:` in `ProcessWagerTransaction`: a waiting row emits no event yet). The worker must call the same reference resolution under the wallet lock and then `markProcessed(reference.id, …)` or `reject`.
 - **Independent review (13 Nov).** The `invariant-reviewer` found no blocker and no major. Fixed at Matheus's request: m1 (L-09 and ARCHITECTURE §9 now say that a `BET` settled by a `WIN` can still be reversed and that several `WIN`s may reference one `BET`), m2 (second `ROLLBACK` of a `WIN` and of a `REFUND` over HTTP), m3 (R-42 back to `in progress`, R-40 to `in progress`, R-35 cites the lookup test), m4 (the branch is created before the commit). Caveat for S7: the worker must lock the wallet before it re-evaluates `referenceFailure` and `hasProcessedReversal`, or single reversal rests on the index alone.
 - **Test order within S6.** T1 to T7 were test-first and seen failing for the expected reason (missing method, missing scope reads, `wager_transactions_next_attempt_when_pending`, 400 from the closed schema). T8 passed on the first run, as the task predicted: the wallet lock already serialises the races. Three cases of the S4 400 list (`REFUND`, `ROLLBACK` and `WIN` with a reference) became valid by design and were replaced by the L-18 cases that stay 400 (reference missing, `BET` with one, self reference, empty, too long, not a string).
+
+## Findings from S7 that later slices depend on
+
+- **Decisions of 13 Nov (docs/tasks/S7.md).** Q1 (L-15 accepted): `correlation_id` is stored on `wager_transactions` by `Migration20261113030000_correlation_id` (nullable: older rows have none, and the worker generates one for them); `TransactionScope.transactions.insert(transaction, correlationId)` takes it. Q2: the 10 attempts are worker attempts; the row is due at once and the window is about 4 minutes (ADR-05 corrected). Q3: `WagerTransactionPendingReference` carries the data of `WagerTransactionProcessed`, emitted once when the row starts to wait.
+- **One settlement step, two callers.** `settle` and `settlementEvents` in `src/application/settlement.ts` are ARCHITECTURE §2 steps 7 to 9 and the event list; `ProcessWagerTransaction` and `ResolvePendingReferences` both call them. `settle` returns `waiting: true` instead of marking the row, because a new row becomes `PENDING_REFERENCE` while a retried one stays as it is and counts an attempt. The shared event data lives in `transactionEventData` (`wager-transaction-processed.ts`).
+- **Worker shape (ADR-05).** `ResolvePendingReferences.findDue(limit)` is a plain read (no lock, oldest due first, served by `wager_transactions_pending_reference_due`); `retry({ id, walletId })` locks the wallet, re-reads the row with `loadPending` (only `PENDING_REFERENCE`) and skips it when it is gone or not due yet. `reschedule` and `finish` update `WHERE status = 'PENDING_REFERENCE'` and throw on a miss. `PendingReferenceWorker` (`src/infrastructure/workers/`) polls every `PENDING_REFERENCE_POLL_INTERVAL_MS`, at once only after a full batch in which some retry completed, shuffles each batch, waits one interval before its first poll, and on shutdown (`beforeApplicationShutdown`, before the ORM closes) starts nothing new, awaits the retry in flight and logs `pending reference worker stopped`. A retry that throws is postponed by the maximum delay (`ResolvePendingReferences.postpone`). Log lines carry `correlationId`, `transactionId`, `walletId` and `providerId` (from the scan) and only the error name, never the driver message (S3 review, m2).
+- **Every application instance runs the worker, but `startApp()` idles it by default** (poll interval of 10⁹ ms): the suite database is shared, and a running worker would retry rows of other suites. A test turns it on by passing `PENDING_REFERENCE_POLL_INTERVAL_MS`. The S7 tests end the rows they leave waiting; the `findDuePending` test uses instants before every earlier run. The concurrency suite runs the worker at test speed (`startProcesses(count, env)` now takes environment overrides, which S9 and S10 can reuse).
+- **For S12.** A retry that throws an unexpected error is logged and postponed by the maximum delay without counting an attempt (`shortcut:` in the worker): a row that always fails is retried every minute until S12 turns it into `FAILED` (ARCHITECTURE §9).
+- **`correlation_id` is guarded in the schema** (`Migration20261113040000_correlation_id_guard`): it is part of the identity the update trigger protects, and `wager_transactions_correlation_id_not_empty` refuses an empty one. A row with `''`, written by the failing first run of its test, was set to `NULL` by hand in `wagering_test` on 13 Nov before the constraint was added. `wagering` gets both migrations at the next `migrate up`.
+- **Independent review (13 Nov).** The `invariant-reviewer` found no blocker. Fixed at Matheus's request: M1 (a full batch of rows that always fail made every instance poll in a 0 ms loop and starved the rest: failed retries are now postponed and a batch without progress waits the interval), M2 (the shutdown test could not fail: it now checks the worker's own log order, and two mutation runs, without `await this.running` and without the `stopped` check in `schedule`, each make it fail), m1 (schema guard above), m2 (L-10 and ADR-05 say that a reference still waiting at exhaustion is `REFERENCE_NOT_FOUND`), m3 (batches shuffled; the limit is in ADR-05), m4 (a rejected poll is logged at `warn` and the loop goes on), m5 (log context), m6 (idle worker in `startApp`, rows retired), m7 (`transactions.settle` renamed `finish`).
+- **For S9.** `ProcessWagerTransactionCommand.correlationId` is now persisted; the SQS consumer should pass the message's correlation id (or generate one) the same way.
+- **Test order within S7.** T1 to T5 and T7 were test-first and seen failing for the expected reason (missing module, missing env defaults, no event, missing scope methods, worker timeouts). Two T5 expectations were wrong in the test itself (the 422 body field is `failureCode`; the final version after three movements is 4) and were corrected to the real contract. T6 and T8 passed on the first run, as predicted; mutation runs prove they are not vacuous: without `PESSIMISTIC_WRITE` the two-resolver test fails (the `not waiting` backstop fires), and without `PendingReferenceWorker` in `AppModule` the R-70 test fails with 40 rows still waiting.

@@ -6,6 +6,7 @@ import { GetWallet } from './application/get-wallet';
 import { OpenWallet } from './application/open-wallet';
 import type { Clock, IdGenerator, UnitOfWork, WalletQueries } from './application/ports';
 import { ProcessWagerTransaction } from './application/process-wager-transaction';
+import { ResolvePendingReferences } from './application/resolve-pending-references';
 import { CLOCK, ID_GENERATOR, UNIT_OF_WORK, WALLET_QUERIES } from './application/tokens';
 import type { Env } from './config/env';
 import { ENV } from './config/env.token';
@@ -19,6 +20,7 @@ import { createSqsClient, SQS_CLIENT } from './infrastructure/messaging/sqs.prov
 import { buildOrmConfig } from './infrastructure/persistence/mikro-orm.config';
 import { MikroOrmUnitOfWork } from './infrastructure/persistence/mikro-orm-unit-of-work';
 import { MikroOrmWalletQueries } from './infrastructure/persistence/mikro-orm-wallet-queries';
+import { PendingReferenceWorker } from './infrastructure/workers/pending-reference.worker';
 
 const systemClock: Clock = { now: () => new Date() };
 const uuidV7: IdGenerator = { newId: () => Bun.randomUUIDv7() };
@@ -62,6 +64,17 @@ export class AppModule implements OnApplicationShutdown {
             new ProcessWagerTransaction(unitOfWork, clock, ids),
           inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR],
         },
+        {
+          provide: ResolvePendingReferences,
+          useFactory: (unitOfWork: UnitOfWork, clock: Clock, ids: IdGenerator) =>
+            new ResolvePendingReferences(unitOfWork, clock, ids, {
+              baseDelayMs: env.PENDING_REFERENCE_BASE_DELAY_MS,
+              maxDelayMs: env.PENDING_REFERENCE_MAX_DELAY_MS,
+              maxAttempts: env.PENDING_REFERENCE_MAX_ATTEMPTS,
+            }),
+          inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR],
+        },
+        PendingReferenceWorker,
         {
           provide: GetWallet,
           useFactory: (wallets: WalletQueries) => new GetWallet(wallets),

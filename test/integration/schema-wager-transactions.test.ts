@@ -443,6 +443,8 @@ describe('wager_transactions immutability', () => {
       currency: 'USD',
       reference_external_transaction_id: 'ext-y',
       created_at: new Date(0),
+      // The worker's events carry it (L-15, S7 review m1).
+      correlation_id: 'corr-z',
     };
     for (const [column, value] of Object.entries(changes)) {
       await expectRefused(
@@ -450,6 +452,13 @@ describe('wager_transactions immutability', () => {
         raised(/identity of wager transaction .* cannot change/),
       );
     }
+  });
+
+  test('an empty correlation id is refused (S7 review, m1)', async () => {
+    await expectRefused(
+      insertTransaction(sql, pendingReference({ correlation_id: '' })),
+      check('wager_transactions_correlation_id_not_empty'),
+    );
   });
 
   test('a pending-reference row only leaves for a terminal status, and FAILED keeps the observed balance', async () => {

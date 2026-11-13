@@ -20,6 +20,25 @@ export interface TransactionIdentity {
   externalTransactionId: string;
 }
 
+/** A waiting transaction found by the worker's scan, with the identifiers its log lines carry. */
+export interface DuePending {
+  id: string;
+  walletId: string;
+  providerId: string;
+  /** Undefined for a row written before the correlation id was stored (L-15). */
+  correlationId: string | undefined;
+}
+
+/** A transaction waiting for its reference, with the worker's bookkeeping (ADR-05). */
+export interface PendingTransaction {
+  transaction: WagerTransaction;
+  /** Worker attempts made so far; the request's own lookup is not one (S7, Q2). */
+  attempts: number;
+  nextAttemptAt: Date;
+  /** The creating request's id (L-15); undefined for a row written before it was stored. */
+  correlationId: string | undefined;
+}
+
 /**
  * The reads and writes available inside one SQL transaction. Each call reaches the database before it
  * returns, in the order it is called, so a constraint violation surfaces at the write that caused it.
@@ -36,7 +55,8 @@ export interface TransactionScope {
     update(wallet: Wallet, expectedVersion: number): Promise<void>;
   };
   transactions: {
-    insert(transaction: WagerTransaction): Promise<void>;
+    /** `correlationId` is the creating request's, kept for the events of a later retry (L-15). */
+    insert(transaction: WagerTransaction, correlationId: string): Promise<void>;
     /** Every transaction holding this idempotency key or this provider and external id (at most two). */
     findByIdentity(identity: TransactionIdentity): Promise<WagerTransaction[]>;
     /** The transaction a reference names (statement §7.1), on any wallet; the caller checks it. */
@@ -46,6 +66,14 @@ export interface TransactionScope {
     ): Promise<WagerTransaction | undefined>;
     /** Whether a `PROCESSED` `REFUND` or `ROLLBACK` of this transaction exists (L-01). */
     hasProcessedReversal(referenceTransactionId: string): Promise<boolean>;
+    /** Waiting transactions due at `now`, oldest due first. A plain read: nothing is locked. */
+    findDuePending(now: Date, limit: number): Promise<DuePending[]>;
+    /** The transaction if it is still `PENDING_REFERENCE`; under its wallet's lock this is the re-check. */
+    loadPending(id: string): Promise<PendingTransaction | undefined>;
+    /** Records a failed attempt. Throws when the row is no longer waiting. */
+    reschedule(id: string, attempts: number, nextAttemptAt: Date): Promise<void>;
+    /** Writes the terminal state a waiting transaction reached. Throws when it is no longer waiting. */
+    finish(transaction: WagerTransaction, attempts: number): Promise<void>;
   };
   ledger: {
     /** Posts `entry` against the system account `counterparty` names in the entry's currency (ADR-12). */

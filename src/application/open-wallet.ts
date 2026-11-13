@@ -90,7 +90,7 @@ export class OpenWallet {
     // Foreign-key order: wallet, transaction, entry; the outbox rows last.
     await this.unitOfWork.run(async (scope) => {
       await scope.wallets.insert(wallet);
-      await scope.transactions.insert(opening);
+      await scope.transactions.insert(opening, command.correlationId);
       await scope.ledger.append(openingEntry, opening.counterparty());
       await scope.outbox.enqueue(events);
     });

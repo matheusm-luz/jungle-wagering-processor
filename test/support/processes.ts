@@ -17,11 +17,14 @@ const READY_TIMEOUT_MS = 20_000;
  * Separate processes share nothing but the database and the broker, which is what the
  * multi-instance requirements are about; Nest applications inside one process would share a heap.
  */
-export async function startProcesses(count: number): Promise<AppProcesses> {
+export async function startProcesses(
+  count: number,
+  env: Readonly<Record<string, string>> = {},
+): Promise<AppProcesses> {
   const ports = Array.from({ length: count }, freePort);
   // A released probe port can be handed out again; two processes on one port would pass as two.
   if (new Set(ports).size !== count) throw new Error(`duplicate port among ${ports.join(', ')}`);
-  const spawned = ports.map(spawn);
+  const spawned = ports.map((port) => spawn(port, env));
   const stop = async () => {
     for (const { proc } of spawned) proc.kill('SIGTERM');
     await Promise.all(spawned.map(({ proc }) => proc.exited));
@@ -46,9 +49,10 @@ interface Spawned {
   proc: Subprocess<'ignore', 'ignore', 'pipe'>;
 }
 
-function spawn(port: number): Spawned {
+/** `env` overrides single variables of the suite's environment for this process. */
+function spawn(port: number, env: Readonly<Record<string, string>>): Spawned {
   const proc = Bun.spawn(['bun', 'src/main.ts'], {
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, ...env, PORT: String(port) },
     stdin: 'ignore',
     stdout: 'ignore',
     // Kept only to explain a process that dies before it is ready.

@@ -1,14 +1,20 @@
-import { UniqueConstraintViolationException } from '@mikro-orm/core';
+import { LockMode, UniqueConstraintViolationException } from '@mikro-orm/core';
 import { type EntityManager, MikroORM } from '@mikro-orm/postgresql';
 import { Inject, Injectable } from '@nestjs/common';
-import { WalletAlreadyExistsError } from '../../application/errors';
+import {
+  ExternalTransactionConflictError,
+  IdempotencyKeyConflictError,
+  WalletAlreadyExistsError,
+} from '../../application/errors';
 import type { IdGenerator, TransactionScope, UnitOfWork } from '../../application/ports';
 import { ID_GENERATOR } from '../../application/tokens';
 import { LedgerAccountKind, type LedgerCounterparty } from '../../domain/ledger-account';
 import {
   toLedgerEntryRecord,
   toOutboxMessageRecord,
+  toWagerTransaction,
   toWagerTransactionRecord,
+  toWallet,
   toWalletRecord,
 } from './mappers';
 import {
@@ -24,6 +30,10 @@ import {
  */
 const CONFLICTS: Readonly<Record<string, () => Error>> = {
   wallets_player_currency_key: () => new WalletAlreadyExistsError(),
+  // Only reachable across wallets: the same key on the same wallet is serialised by its lock and
+  // found by the lookup. Across wallets the payloads differ (the wallet id is hashed): a conflict.
+  wager_transactions_idempotency_key_key: () => new IdempotencyKeyConflictError(),
+  wager_transactions_provider_external_key: () => new ExternalTransactionConflictError(),
 };
 
 function translate(error: unknown): unknown {
@@ -57,8 +67,9 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
   }
 
   /**
-   * Inserts are native (`em.insert`): one `INSERT` on the transaction's connection, sent before the
-   * call returns, with no identity map and no change set to flush later.
+   * Writes are native (`em.insert`, `em.nativeUpdate`): one statement on the transaction's
+   * connection, sent before the call returns. Reads skip the identity map. Nothing is tracked, so
+   * there is no change set to flush later.
    */
   private scope(em: EntityManager): TransactionScope {
     return {
@@ -66,10 +77,35 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
         insert: async (wallet) => {
           await em.insert(WalletRecord, toWalletRecord(wallet));
         },
+        lock: async (walletId) => {
+          const row = await em.findOne(WalletRecord, walletId, {
+            lockMode: LockMode.PESSIMISTIC_WRITE,
+            disableIdentityMap: true,
+          });
+          return row === null ? undefined : toWallet(row);
+        },
+        update: async (wallet, expectedVersion) => {
+          const { balance, version, updatedAt } = toWalletRecord(wallet);
+          const updated = await em.nativeUpdate(
+            WalletRecord,
+            { id: wallet.id, version: expectedVersion },
+            { balance, version, updatedAt },
+          );
+          // Under the lock the version always matches; a miss is a bug, never a lost update.
+          if (updated !== 1) throw new Error(`stale wallet version: ${wallet.id}`);
+        },
       },
       transactions: {
         insert: async (transaction) => {
           await em.insert(WagerTransactionRecord, toWagerTransactionRecord(transaction));
+        },
+        findByIdentity: async ({ idempotencyKey, providerId, externalTransactionId }) => {
+          const rows = await em.find(
+            WagerTransactionRecord,
+            { $or: [{ idempotencyKey }, { providerId, externalTransactionId }] },
+            { disableIdentityMap: true },
+          );
+          return rows.map(toWagerTransaction);
         },
       },
       ledger: {

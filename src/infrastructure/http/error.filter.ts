@@ -7,8 +7,11 @@ import { RequestValidationError } from './request-validation.error';
 /** ARCHITECTURE §6: the status of each outcome that is answered without being persisted. */
 const STATUS_BY_CODE: Readonly<Record<string, number>> = {
   VALIDATION_ERROR: 400,
+  IDEMPOTENCY_KEY_REQUIRED: 400,
   WALLET_NOT_FOUND: 404,
   WALLET_ALREADY_EXISTS: 409,
+  IDEMPOTENCY_KEY_CONFLICT: 409,
+  EXTERNAL_TRANSACTION_CONFLICT: 409,
 };
 
 export interface ErrorResponse {

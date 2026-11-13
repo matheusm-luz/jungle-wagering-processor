@@ -2,7 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import { InvalidIntegrationEventError } from '../../../src/domain/errors';
 import { IntegrationEvent } from '../../../src/domain/events/integration-event';
 import { WagerTransactionProcessed } from '../../../src/domain/events/wager-transaction-processed';
+import { WagerTransactionRejected } from '../../../src/domain/events/wager-transaction-rejected';
 import { WalletBalanceChanged } from '../../../src/domain/events/wallet-balance-changed';
+import { FailureCode } from '../../../src/domain/failure-code';
 import { Money } from '../../../src/domain/money';
 import {
   type CreateWagerTransactionProps,
@@ -206,6 +208,62 @@ describe('WagerTransactionProcessed', () => {
     expect(event).toBeInstanceOf(IntegrationEvent);
     expect(event.eventType).toBe('WagerTransactionProcessed');
     expect(event.version).toBe(1);
+  });
+});
+
+describe('WagerTransactionRejected', () => {
+  test('carries the failure code, the observed balance and the unchanged wallet version', () => {
+    const { wallet } = openedWallet();
+    const transaction = WagerTransaction.create({ ...betProps(), money: brl('2000.00') });
+    transaction.reject(FailureCode.InsufficientFunds, wallet.balance);
+
+    const event = WagerTransactionRejected.from(transaction, wallet, context('event-3'));
+
+    expect(event).toBeInstanceOf(IntegrationEvent);
+    expect(event.toJSON()).toEqual({
+      eventId: 'event-3',
+      eventType: 'WagerTransactionRejected',
+      aggregateId: 'wallet-1',
+      correlationId: 'correlation-1',
+      occurredAt: '2026-11-13T12:00:00.000Z',
+      version: 1,
+      data: {
+        transactionId: 'tx-2',
+        providerId: 'provider-a',
+        externalTransactionId: 'transaction-123',
+        walletId: 'wallet-1',
+        playerId: 'player-1',
+        kind: WagerTransactionKind.Bet,
+        money: { amount: '2000.00', currency: 'BRL' },
+        failureCode: FailureCode.InsufficientFunds,
+        balance: { amount: '1000.00', currency: 'BRL' },
+        walletVersion: 1,
+      },
+    });
+  });
+
+  test('from refuses a transaction that is not REJECTED or belongs to another wallet', () => {
+    const { wallet } = openedWallet();
+
+    expect(() => WagerTransactionRejected.from(bet(), wallet, context())).toThrow(
+      InvalidIntegrationEventError,
+    );
+    expect(() => WagerTransactionRejected.from(processedBet(), wallet, context())).toThrow(
+      InvalidIntegrationEventError,
+    );
+    const rejected = bet();
+    rejected.reject(FailureCode.WalletPlayerMismatch, brl('1.00'));
+    const { wallet: stranger } = Wallet.open({
+      id: 'wallet-2',
+      playerId: 'player-1',
+      initialBalance: brl('1.00'),
+      openingTransactionId: 'tx-9',
+      openingEntryId: 'entry-9',
+      at: AT,
+    });
+    expect(() => WagerTransactionRejected.from(rejected, stranger, context())).toThrow(
+      InvalidIntegrationEventError,
+    );
   });
 });
 

@@ -50,7 +50,7 @@ Every balance change runs this sequence inside one `em.transactional()` call, at
 
 - **Lock first, then look up.** At `READ COMMITTED` each statement sees data committed before it started, and a `FOR UPDATE` that waited returns the latest row version. So whoever gets the lock second sees everything the first one committed, including its transaction row. That is what turns 50 parallel copies of one bet into one debit and 49 replays.
 - **One wallet, one lock.** A transaction and its reference must belong to the same wallet (rule 7.2), so every row the use case reads or writes is protected by that single lock. Locking one row per transaction makes deadlock impossible.
-- **The unique indexes are the backstop, not the mechanism.** The same key sent with a different `walletId` is not serialised by the lock. The unique index on `idempotency_key` rejects the second insert, the transaction rolls back, and the retry finds the row and answers 409.
+- **The unique indexes are the backstop, not the mechanism.** The same key sent with a different `walletId` is not serialised by the lock. The unique index on `idempotency_key` rejects the second insert, the transaction rolls back, and the violation, recognised by the constraint name, is answered 409. It is always a conflict: the same hash implies the same `walletId`, hence the same lock and a replay found by the lookup. The unique index on provider + external id works the same way.
 - **Inbox, effects and outbox commit together.** If the inbox row exists, the effects exist. If the process dies before the ack, the redelivery hits the inbox row and is acknowledged without a second effect.
 
 ## 3. Data model and database guarantees
@@ -205,6 +205,7 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 | `failureCode` | Meaning | Persisted |
 | --- | --- | --- |
 | `INSUFFICIENT_FUNDS` | `BET` larger than the balance | yes, `REJECTED` |
+| `BALANCE_LIMIT_EXCEEDED` | A credit would take the balance beyond `NUMERIC(19,2)` | yes, `REJECTED` |
 | `REVERSAL_WOULD_OVERDRAW` | Reversing a credit would make the balance negative | yes, `REJECTED` |
 | `CURRENCY_MISMATCH` | Operation currency differs from the wallet currency | yes, `REJECTED` |
 | `WALLET_PLAYER_MISMATCH` | The wallet belongs to another player | yes, `REJECTED` |
@@ -232,6 +233,7 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 | L-16 | A currency is any ISO-4217 code by shape, three uppercase letters, with no allow-list; every currency is handled at a scale of two. The challenge runs in `BRL`, the model stays multi-currency. |
 | L-17 | One amount has one spelling: digits, a dot and two decimals, with no sign, no whitespace, no leading zeros and at most 17 integer digits, the range of `NUMERIC(19,2)`. |
 | L-18 | `REFUND` and `ROLLBACK` require a reference; `WIN` and `LOSS` accept one; `BET` and `OPENING` refuse one. A transaction cannot reference itself. Violations are invalid requests, not persisted rejections. |
+| L-20 | The HTTP answer to `WALLET_PLAYER_MISMATCH` carries no `balance`: without authentication it would reveal another player's balance. The row and the internal event keep it. |
 
 The remaining proposed interpretations are listed in [docs/spec/REQUIREMENTS.md](docs/spec/REQUIREMENTS.md) and move here as they are confirmed.
 
@@ -246,6 +248,7 @@ The remaining proposed interpretations are listed in [docs/spec/REQUIREMENTS.md]
 
 - Fixed scale of two decimals for every currency. A code is validated by shape only, so a currency with another minor unit, such as JPY or KWD, is accepted and handled at two decimals, which is wrong for it; those currencies are out of scope.
 - A `WIN` without a reference is credited without requiring a `BET` in the round.
+- That a transaction's `playerId` is its wallet's owner is a rule of the use case (`WALLET_PLAYER_MISMATCH`), not of the schema: a rejected row stores the wrong player on purpose, so the guarantee would need a check limited to `PROCESSED` rows or a trigger (S4 review, m6).
 - No global ordering of events; ordering is per wallet and best-effort across publisher batches.
 - A hot wallet is processed serially by design; its throughput is bounded by the duration of one transaction.
 - The emulator image is frozen and differs from AWS in timing details.

@@ -432,7 +432,7 @@ describe('WagerTransaction state machine', () => {
     const businessCodes = Object.values(FailureCode).filter(
       (code) => code !== FailureCode.ProcessingFailed,
     );
-    expect(businessCodes.length).toBe(10);
+    expect(businessCodes.length).toBe(11);
 
     for (const code of businessCodes) {
       const rejected = ofKind(Kind.Bet);

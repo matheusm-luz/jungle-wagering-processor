@@ -8,6 +8,8 @@
 export enum FailureCode {
   /** `BET` larger than the balance. */
   InsufficientFunds = 'INSUFFICIENT_FUNDS',
+  /** A credit would take the balance beyond `NUMERIC(19,2)` (docs/tasks/S4.md, Q1). */
+  BalanceLimitExceeded = 'BALANCE_LIMIT_EXCEEDED',
   /** Reversing a credit would make the balance negative. */
   ReversalWouldOverdraw = 'REVERSAL_WOULD_OVERDRAW',
   /** Operation currency differs from the wallet currency. */

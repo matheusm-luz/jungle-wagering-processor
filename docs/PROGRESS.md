@@ -16,9 +16,9 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S3 is done (13 Nov), on the branch `feat/s3-open-wallet`. Next is S4, `BET`, `WIN`, `LOSS` over HTTP.
+S4 is done (13 Nov), on the branch `feat/s4-bet-win-loss`. Next is S5, the multi-process harness and the first concurrency tests.
 
-1. S3 reaches `main` through a pull request, as S1 and S2 did. Merge it, update the local `main`, then `/sdd-implement S4`. The workflow commands are listed in `CLAUDE.md`.
+1. S4 reaches `main` through a pull request, as S1 to S3 did. Merge it, update the local `main`, then `/sdd-implement S5`. The workflow commands are listed in `CLAUDE.md`.
 2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
 
 ## Phases
@@ -29,7 +29,7 @@ S3 is done (13 Nov), on the branch `feat/s3-open-wallet`. Next is S4, `BET`, `WI
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0, S1, S2 and S3 done; next is S4 |
+| 4 | Implementation, slice by slice | S0 to S4 done; next is S5 |
 
 ## Decisions confirmed by Matheus (12 Nov, unless dated)
 
@@ -159,6 +159,20 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
   - **m4:** the 409 of a duplicate wallet carries no wallet id; L-19, proposed in REQUIREMENTS.
 - **Not done:** the ADR-12 sentence on the `FOR KEY SHARE` lock (S2 review, m6) is still open.
 
+## Findings from S4 that later slices depend on
+
+- **Decisions of 13 Nov (docs/tasks/S4.md).** Q1: a credit beyond `NUMERIC(19,2)` is `REJECTED` with `BALANCE_LIMIT_EXCEEDED` (422, event), added by `Migration20261113020000_balance_limit`. Q2: `WagerTransactionRejected.data` is the data of `WagerTransactionProcessed` plus `failureCode`. Q3: storing `correlationId` (L-15) is deferred to S7.
+- **One use case, `ProcessWagerTransaction`** (`src/application/process-wager-transaction.ts`), for HTTP now and SQS in S9: S9 passes `data.idempotencyKey` as `idempotencyKey` and must add `causationId` to the command. Rules the domain refuses at creation become `InvalidWagerTransactionError` (`VALIDATION_ERROR`, 400), which S9 treats as permanent (DLQ).
+- **Order inside the transaction:** lock → `WalletNotFoundError` → lookup by key or provider + external id (same key and hash: replay; other hash: `IDEMPOTENCY_KEY_CONFLICT`; other key: `EXTERNAL_TRANSACTION_CONFLICT`) → player, then currency → movement → writes. A replay is answered before the player and currency checks, from the stored row. A key resent with an unknown wallet is 404, not 409.
+- **Scope additions:** `wallets.lock` (`findOne` with `PESSIMISTIC_WRITE`, no identity map), `wallets.update(wallet, expectedVersion)` (native `UPDATE … WHERE id AND version`, throws on a miss), `transactions.findByIdentity`. Every read skips the identity map and every write is native: nothing is flushed at commit. The two transaction unique constraints map straight to 409 by name; ARCHITECTURE §2 now says so.
+- **References wait for S6.** The request schema accepts only `BET`, `WIN` and `LOSS` and no `referenceExternalTransactionId`. S6 opens both and resolves the reference under the same wallet lock (same-wallet foreign key).
+- **`FAILED` has no HTTP status yet.** `WageringController` throws (500) for a status outside 200/202/422 (`shortcut:` comment); S12 decides, with `lock_timeout` and `statement_timeout` (still unset) and the 503.
+- **HTTP validation lives in `src/infrastructure/http/validation.ts`,** shared by both controllers: identifiers 1 to 128 characters without U+0000, `Idempotency-Key` 1 to 256 visible ASCII characters (`idempotencyKeySchema`, for S9 to reuse on `data.idempotencyKey`), `walletId` a UUID, `providerId` `SYSTEM` refused.
+- **Times.** `createdAt` is the arrival; the movement, `processed_at`, `wallet.updated_at`, the entry and the events take the clock read after the lock, so within one wallet they follow the version. Clocks of different instances can still disagree; consumers order by `walletVersion` (L-14).
+- **Independent review (13 Nov).** The `invariant-reviewer` found no blocker and no major. Fixed at Matheus's request: m1 (clock after the lock), m2 (key format), m3 (L-20: no `balance` in the HTTP answer to `WALLET_PLAYER_MISMATCH`; the row and the event keep it), m4 (cross-wallet test and its matrix citation), m5 (lock test waits on `pg_stat_activity`, no sleep), m7 (branch, matrix rows R-26, R-28, R-38, R-62). Recorded, not fixed: m6 (player = wallet owner is a use-case rule, not a schema guarantee; ARCHITECTURE §9). Its caveat stands: R-39 and R-47 are proven in one process; S5 proves them across three.
+- **Test order within S4.** T2, T3, T4, T5, T6 and the replay cases of T7 were test-first and seen failing for the expected reason. Not seen failing: the two 409 cases of T7 (the unique-index backstop already answered 409 before the lookup existed) and T8 (the schema was written with the controller in T5); a mutation run (the `SYSTEM` refusal removed) made T8 fail with a 500, so it is not vacuous. T9 passes by construction of the unit of work. A mutation run without `PESSIMISTIC_WRITE` made the lock test fail.
+- **Not done:** concurrency across processes is S5; the in-process tests only prove the lock with two transactions and the backstop with two wallets.
+
 ## Slices
 
 Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
@@ -171,7 +185,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | S1 | Domain core | 13 Nov, night session | 1.5 | done 13 Nov |
 | S2 | Schema and migrations | 13 Nov | 1.5 | done 13 Nov |
 | S3 | Open and read a wallet | 13 Nov | 1.0 | done 13 Nov |
-| S4 | `BET`, `WIN`, `LOSS` over HTTP | 13 Nov | 2.0 | todo |
+| S4 | `BET`, `WIN`, `LOSS` over HTTP | 13 Nov | 2.0 | done 13 Nov |
 | S5 | Multi-process harness and first concurrency tests | 13 Nov | 1.0 | todo |
 | S6 | Reversals | 13 Nov | 1.5 | todo |
 | S7 | Pending references | 13 Nov | 1.5 | todo |
@@ -188,7 +202,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 
 ## Environment
 
-- Repository: `C:\Projetos\JungleGaming\backend-challenge`, remote `origin` = private GitHub repository `jungle-wagering-processor`. `main` was pushed on 13 Nov, up to the S0 scaffold and the budget recalculation; later commits stay local until Matheus asks for a push. S1 was merged into `main` through pull request #1 on 13 Nov. S2 was merged into `main` through pull request #2 on 13 Nov. S3 lives on the branch `feat/s3-open-wallet`, pushed on 13 Nov with pull request #3 open.
+- Repository: `C:\Projetos\JungleGaming\backend-challenge`, remote `origin` = private GitHub repository `jungle-wagering-processor`. `main` was pushed on 13 Nov, up to the S0 scaffold and the budget recalculation; later commits stay local until Matheus asks for a push. S1 was merged into `main` through pull request #1 on 13 Nov. S2 was merged into `main` through pull request #2 on 13 Nov. S3 was merged into `main` through pull request #3 on 13 Nov. S4 lives on the branch `feat/s4-bet-win-loss`.
 - Bun 1.4.4, installed through npm. `D:\Programas\nvm\installs\v24.21.0` was added to the user PATH on 12 Nov; terminals opened before that need a restart.
 - Docker Desktop 29.9.3 with Compose v5.7.0. An already-open VS Code does not see the Docker CLI; restart VS Code. Docker Desktop was not running when S1 was verified: check that it is up before `test:integration`.
 - Images already pulled: `localstack/localstack:4.12`, `postgres:17-alpine`.

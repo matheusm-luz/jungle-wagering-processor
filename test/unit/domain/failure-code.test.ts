@@ -7,6 +7,7 @@ describe('FailureCode', () => {
     const codes: string[] = Object.values(FailureCode);
 
     expect(codes.sort()).toEqual([
+      'BALANCE_LIMIT_EXCEEDED',
       'CURRENCY_MISMATCH',
       'INSUFFICIENT_FUNDS',
       'PROCESSING_FAILED',

@@ -27,3 +27,26 @@ export class WalletNotFoundError extends ApplicationError {
     super('Wallet not found');
   }
 }
+
+/** ADR-03: the same key with another payload is a conflict, never a replay. */
+export class IdempotencyKeyConflictError extends ApplicationError {
+  readonly code = 'IDEMPOTENCY_KEY_CONFLICT';
+
+  constructor() {
+    super('The idempotency key was already used with another payload');
+  }
+}
+
+/** L-04: the provider's external id is a second identity, unique per provider. */
+export class ExternalTransactionConflictError extends ApplicationError {
+  readonly code = 'EXTERNAL_TRANSACTION_CONFLICT';
+
+  constructor() {
+    super('The external transaction id was already used under another idempotency key');
+  }
+}
+
+/** A request the domain refuses on its own (L-03, L-18), such as a `BET` of zero: answered 400. */
+export class InvalidWagerTransactionError extends ApplicationError {
+  readonly code = 'VALIDATION_ERROR';
+}

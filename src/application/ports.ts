@@ -13,16 +13,32 @@ export interface IdGenerator {
   newId(): string;
 }
 
+/** The two identities of a transaction (ADR-03, L-04); each is unique on its own. */
+export interface TransactionIdentity {
+  idempotencyKey: string;
+  providerId: string;
+  externalTransactionId: string;
+}
+
 /**
- * The writes available inside one SQL transaction. Each call reaches the database before it
+ * The reads and writes available inside one SQL transaction. Each call reaches the database before it
  * returns, in the order it is called, so a constraint violation surfaces at the write that caused it.
  */
 export interface TransactionScope {
   wallets: {
     insert(wallet: Wallet): Promise<void>;
+    /**
+     * `SELECT … FOR UPDATE` (ADR-01): the wallet stays locked until the transaction ends, and a
+     * concurrent lock waits. Undefined when the wallet does not exist.
+     */
+    lock(walletId: string): Promise<Wallet | undefined>;
+    /** Writes balance, version and update time; throws when the stored version is not `expectedVersion`. */
+    update(wallet: Wallet, expectedVersion: number): Promise<void>;
   };
   transactions: {
     insert(transaction: WagerTransaction): Promise<void>;
+    /** Every transaction holding this idempotency key or this provider and external id (at most two). */
+    findByIdentity(identity: TransactionIdentity): Promise<WagerTransaction[]>;
   };
   ledger: {
     /** Posts `entry` against the system account `counterparty` names in the entry's currency (ADR-12). */

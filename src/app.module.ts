@@ -5,12 +5,14 @@ import { APP_FILTER } from '@nestjs/core';
 import { GetWallet } from './application/get-wallet';
 import { OpenWallet } from './application/open-wallet';
 import type { Clock, IdGenerator, UnitOfWork, WalletQueries } from './application/ports';
+import { ProcessWagerTransaction } from './application/process-wager-transaction';
 import { CLOCK, ID_GENERATOR, UNIT_OF_WORK, WALLET_QUERIES } from './application/tokens';
 import type { Env } from './config/env';
 import { ENV } from './config/env.token';
 import { ReadinessService } from './infrastructure/health/readiness.service';
 import { ErrorFilter } from './infrastructure/http/error.filter';
 import { HealthController } from './infrastructure/http/health.controller';
+import { WageringController } from './infrastructure/http/wagering.controller';
 import { WalletsController } from './infrastructure/http/wallets.controller';
 import { JsonLogger } from './infrastructure/logging/json-logger';
 import { createSqsClient, SQS_CLIENT } from './infrastructure/messaging/sqs.provider';
@@ -36,7 +38,7 @@ export class AppModule implements OnApplicationShutdown {
           registerRequestContext: false,
         }),
       ],
-      controllers: [HealthController, WalletsController],
+      controllers: [HealthController, WalletsController, WageringController],
       providers: [
         { provide: ENV, useValue: env },
         { provide: JsonLogger, useValue: logger },
@@ -52,6 +54,12 @@ export class AppModule implements OnApplicationShutdown {
           provide: OpenWallet,
           useFactory: (unitOfWork: UnitOfWork, clock: Clock, ids: IdGenerator) =>
             new OpenWallet(unitOfWork, clock, ids),
+          inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR],
+        },
+        {
+          provide: ProcessWagerTransaction,
+          useFactory: (unitOfWork: UnitOfWork, clock: Clock, ids: IdGenerator) =>
+            new ProcessWagerTransaction(unitOfWork, clock, ids),
           inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR],
         },
         {

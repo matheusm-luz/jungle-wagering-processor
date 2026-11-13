@@ -42,6 +42,16 @@ export const SUBMITTABLE_KINDS: readonly WagerTransactionKind[] = [
 /** The kinds that cannot exist without `referenceExternalTransactionId` (statement §7.1). */
 const REQUIRES_REFERENCE: readonly WagerTransactionKind[] = [Kind.Refund, Kind.Rollback];
 
+/** The kinds each kind may reference (statement §7, L-09). A kind missing here refuses a reference. */
+const REFERENCEABLE: Readonly<
+  Partial<Record<WagerTransactionKind, readonly WagerTransactionKind[]>>
+> = {
+  [Kind.Refund]: [Kind.Bet],
+  [Kind.Rollback]: [Kind.Bet, Kind.Win, Kind.Refund],
+  [Kind.Win]: [Kind.Bet],
+  [Kind.Loss]: [Kind.Bet],
+};
+
 /**
  * The whole state machine (ARCHITECTURE §5). A status that maps to an empty list is terminal.
  */
@@ -308,13 +318,7 @@ export class WagerTransaction {
    * transaction would invert the direction of the money without any error.
    */
   ledgerDirectionFor(reference?: WagerTransaction): LedgerDirection {
-    if (
-      reference !== undefined &&
-      (reference.providerId !== this.providerId ||
-        reference.externalTransactionId !== this.referenceExternalTransactionId)
-    ) {
-      throw new InvalidTransactionError('The transaction given is not the declared reference');
-    }
+    if (reference !== undefined) this.assertDeclaredReference(reference);
 
     switch (this.kind) {
       case Kind.Bet:
@@ -339,6 +343,42 @@ export class WagerTransaction {
   }
 
   /**
+   * The first reference rule (statement §7) that `reference` breaks, in the order ownership, kind,
+   * status, amount, single reversal; undefined when it breaks none. Amount and single reversal
+   * bind only `REFUND` and `ROLLBACK`: a `WIN` pays another amount, and a `WIN` of a reversed `BET`
+   * is accepted (docs/tasks/S6.md, Q2). A reference still `PENDING_REFERENCE` breaks no status
+   * rule: the caller waits for it (L-10).
+   *
+   * @param alreadyReversed whether `reference` already has a `PROCESSED` `REFUND` or `ROLLBACK` (L-01).
+   */
+  referenceFailure(reference: WagerTransaction, alreadyReversed: boolean): FailureCode | undefined {
+    this.assertDeclaredReference(reference);
+    const isReversal = REQUIRES_REFERENCE.includes(this.kind);
+
+    if (
+      reference.playerId !== this.playerId ||
+      reference.walletId !== this.walletId ||
+      reference.money.currency !== this.money.currency ||
+      reference.roundId !== this.roundId
+    ) {
+      return FailureCode.ReferenceMismatch;
+    }
+    if (!REFERENCEABLE[this.kind]?.includes(reference.kind)) {
+      return FailureCode.ReferenceKindNotAllowed;
+    }
+    if (reference.status === Status.Rejected || reference.status === Status.Failed) {
+      return FailureCode.ReferenceNotProcessed;
+    }
+    if (isReversal && !reference.money.equals(this.money)) {
+      return FailureCode.ReferenceAmountMismatch;
+    }
+    if (isReversal && alreadyReversed) {
+      return FailureCode.ReferenceAlreadyReversed;
+    }
+    return undefined;
+  }
+
+  /**
    * The system account on the other side of this transaction's ledger entry (ADR-12): `OPENING`
    * posts against `FUNDING`, gameplay against the settlement account of its provider.
    */
@@ -353,6 +393,16 @@ export class WagerTransaction {
         return { kind: LedgerAccountKind.ProviderSettlement, providerId: this.providerId };
       case Kind.Loss:
         throw new InvalidTransactionError('LOSS does not move the balance');
+    }
+  }
+
+  /** Handing in another transaction would apply the rules, or the direction, of the wrong one. */
+  private assertDeclaredReference(reference: WagerTransaction): void {
+    if (
+      reference.providerId !== this.providerId ||
+      reference.externalTransactionId !== this.referenceExternalTransactionId
+    ) {
+      throw new InvalidTransactionError('The transaction given is not the declared reference');
     }
   }
 

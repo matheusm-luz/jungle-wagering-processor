@@ -8,17 +8,17 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 | --- | --- |
 | Statement received | 2026-11-12 10:32 |
 | Deadline | **2026-11-15 10:32** |
-| Last time informed | 2026-11-13 00:28 |
+| Last time informed | 2026-11-13 15:33 |
 | Budget stated on 12 Nov | 6h from 20:51, so the night session ends at about 02:50 on 13 Nov; 3.6h of it are used |
 | Daily budget | 10h |
 
-**Remaining budget (at 13 Nov 00:28):** 2.4h left of the night session, 10h on 13 Nov, 10h on 14 Nov: **22.4h**. The slices that are not done need **22h** (S1–S13 20.5h, double-entry 1.5h; see [PLAN.md](PLAN.md)). Slack: **0.4h**, which is none in practice — the 2.5h buffer went into the specification phase and S0. This assumes the night session still runs to about 02:50 as stated; if the hours after midnight count against the 10h of 13 Nov, the budget is 20h and the deficit is 2h. The morning of 15 Nov is not part of the budget: Matheus allows it only for a critical emergency.
+**Remaining budget (at 13 Nov 15:33):** S0 to S5 are done and merged (S5 is #5). Work left: S6–S13 **13.5h** plus about **0.5h** of double-entry (settlement postings of S6 reuse the S4 path; the trial balance of S8), so **14h**. Hours left depend on how much of the 10h of 13 Nov is already spent, which Matheus did not state: (a) working until midnight, 8.4h today + 10h on 14 Nov = **18.4h**, slack **4.4h**; (b) if S1–S5 took their planned 7.5h, of which 2.4h fell in the night session, about 5h of 13 Nov are spent: 5h + 10h = **15h**, slack **1h**. The morning of 15 Nov is not part of the budget: Matheus allows it only for a critical emergency.
 
 ## Next step
 
-S5 is done (13 Nov), on the branch `feat/s5-concurrency`. Next is S6, reversals (`REFUND` and `ROLLBACK`).
+S6 is done (13 Nov), committed on the branch `feat/s6-reversals`. Next is S7, pending references (worker, backoff, exhaustion, `WagerTransactionPendingReference`).
 
-1. S5 reaches `main` through a pull request, as S1 to S4 did. Merge it, update the local `main`, then `/sdd-implement S6`. The workflow commands are listed in `CLAUDE.md`.
+1. S6 reaches `main` through a pull request, as S1 to S5 did. Then `/sdd-implement S7` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
 2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
 
 ## Phases
@@ -29,7 +29,7 @@ S5 is done (13 Nov), on the branch `feat/s5-concurrency`. Next is S6, reversals 
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0 to S5 done; next is S6 |
+| 4 | Implementation, slice by slice | S0 to S6 done; next is S7 |
 
 ## Decisions confirmed by Matheus (12 Nov, unless dated)
 
@@ -112,8 +112,8 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **`Wallet.open` returns `{ wallet, openingEntry }`.** The entry is `undefined` for a zero balance. S3 creates and persists the `OPENING` transaction only when the entry exists, and must choose the provider id, external id and idempotency key of that internal transaction.
 - **A ledger entry carries `sequence`,** the wallet version it produced. S2 needs the column and `UNIQUE (wallet_id, sequence)`.
 - **A transaction carries `observedBalance`** (ADR-03), set by `markProcessed`, `markPendingReference` and `reject`; `fail` leaves it as it was. Its currency is the wallet's, which differs from the transaction's own currency on a `CURRENCY_MISMATCH` rejection. S2 has to store it so that it rehydrates exactly.
-- **`reject` does not record the resolved reference id.** S6 decides whether a rejection found by the reference rules should keep it for audit.
-- **`Wallet.debit` throws one error, `InsufficientFundsError`.** The use case maps it to `INSUFFICIENT_FUNDS` (S4) or `REVERSAL_WOULD_OVERDRAW` (S6).
+- **`reject` does not record the resolved reference id.** Decided in S6: it stays that way. A rejected row keeps the declared external id only, because the resolved one may belong to another wallet and the same-wallet foreign key would refuse it.
+- **`Wallet.debit` throws one error, `InsufficientFundsError`.** The use case maps it to `INSUFFICIENT_FUNDS` (S4) or, for a `ROLLBACK`, `REVERSAL_WOULD_OVERDRAW` (S6).
 - **`Wallet.credit` can throw `MoneyOutOfRangeError`** when the new balance would exceed `NUMERIC(19,2)`. It is reachable with valid input (two maximum credits) and is deliberately not an `InvalidMoneyError`, so it cannot be answered as a 400 that depends on the balance. ARCHITECTURE §6 has no code for it: S4 must decide the outcome, through `/sdd-plan`.
 - **A wallet opened with a zero balance has its first entry at `sequence` 2,** because it is already at version 1. The ledger cursor of S8 must not assume that sequences start at 1.
 - **`reject` refuses `PROCESSING_FAILED` and `fail` accepts only it.** `ledgerDirectionFor` refuses a transaction that is not the declared reference (same provider, declared external id).
@@ -165,7 +165,7 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **One use case, `ProcessWagerTransaction`** (`src/application/process-wager-transaction.ts`), for HTTP now and SQS in S9: S9 passes `data.idempotencyKey` as `idempotencyKey` and must add `causationId` to the command. Rules the domain refuses at creation become `InvalidWagerTransactionError` (`VALIDATION_ERROR`, 400), which S9 treats as permanent (DLQ).
 - **Order inside the transaction:** lock → `WalletNotFoundError` → lookup by key or provider + external id (same key and hash: replay; other hash: `IDEMPOTENCY_KEY_CONFLICT`; other key: `EXTERNAL_TRANSACTION_CONFLICT`) → player, then currency → movement → writes. A replay is answered before the player and currency checks, from the stored row. A key resent with an unknown wallet is 404, not 409.
 - **Scope additions:** `wallets.lock` (`findOne` with `PESSIMISTIC_WRITE`, no identity map), `wallets.update(wallet, expectedVersion)` (native `UPDATE … WHERE id AND version`, throws on a miss), `transactions.findByIdentity`. Every read skips the identity map and every write is native: nothing is flushed at commit. The two transaction unique constraints map straight to 409 by name; ARCHITECTURE §2 now says so.
-- **References wait for S6.** The request schema accepts only `BET`, `WIN` and `LOSS` and no `referenceExternalTransactionId`. S6 opens both and resolves the reference under the same wallet lock (same-wallet foreign key).
+- **References opened in S6.** The request schema accepts the five submittable kinds and `referenceExternalTransactionId`; S6 resolves the reference under the same wallet lock (same-wallet foreign key).
 - **`FAILED` has no HTTP status yet.** `WageringController` throws (500) for a status outside 200/202/422 (`shortcut:` comment); S12 decides, with `lock_timeout` and `statement_timeout` (still unset) and the 503.
 - **HTTP validation lives in `src/infrastructure/http/validation.ts`,** shared by both controllers: identifiers 1 to 128 characters without U+0000, `Idempotency-Key` 1 to 256 visible ASCII characters (`idempotencyKeySchema`, for S9 to reuse on `data.idempotencyKey`), `walletId` a UUID, `providerId` `SYSTEM` refused.
 - **Times.** `createdAt` is the arrival; the movement, `processed_at`, `wallet.updated_at`, the entry and the events take the clock read after the lock, so within one wallet they follow the version. Clocks of different instances can still disagree; consumers order by `walletVersion` (L-14).
@@ -186,8 +186,8 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | S2 | Schema and migrations | 13 Nov | 1.5 | done 13 Nov |
 | S3 | Open and read a wallet | 13 Nov | 1.0 | done 13 Nov |
 | S4 | `BET`, `WIN`, `LOSS` over HTTP | 13 Nov | 2.0 | done 13 Nov |
-| S5 | Multi-process harness and first concurrency tests | 13 Nov | 1.0 | todo |
-| S6 | Reversals | 13 Nov | 1.5 | todo |
+| S5 | Multi-process harness and first concurrency tests | 13 Nov | 1.0 | done 13 Nov |
+| S6 | Reversals | 13 Nov | 1.5 | done 13 Nov |
 | S7 | Pending references | 13 Nov | 1.5 | todo |
 | S8 | Read side | 13 Nov | 1.0 | todo |
 | S9 | SQS consumer | 14 Nov | 2.5 | todo |
@@ -213,5 +213,14 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 - **`bun run test:concurrency`** runs `test/concurrency/` in the same `test` image and container as the integration suite. The concurrency suite takes about 2 s.
 - **The `version` guard is a real second line.** In the mutation run without `PESSIMISTIC_WRITE`, every race test failed but the ledger invariant held: the version guard of `wallets.update` and `UNIQUE (wallet_id, sequence)` refused the lost updates. Those refusals are not mapped (a plain 500, or 409 when the idempotency index fires first); with the lock in place they cannot happen.
 - **No `lock_timeout` yet, and the wait is bounded by the pool, not by the lock (review m4).** A request waits for the wallet lock while holding a pool connection; the `pg` pool has `max` 10 per process (`mikro-orm.config.ts` sets no `pool`), and `connectionTimeoutMillis` (5000) is also the wait for a free connection. On a hot wallet held for more than 5 s, the requests beyond 10 per process fail with `timeout exceeded when trying to connect`, a 500 today. Nothing is written and a retry with the same key is idempotent. S12 sets `lock_timeout` and `statement_timeout`, maps both those and the pool acquisition timeout to 503, and tests the three.
-- **Not covered here:** reversals racing their reference (S6, S7), the SQS consumer and outbox publisher across processes (S9, S10), restart (R-71).
+- **Not covered here:** reversals racing their reference (S7; reversals racing each other are S6), the SQS consumer and outbox publisher across processes (S9, S10), restart (R-71).
 - **Independent review (13 Nov).** The `invariant-reviewer` found no blocker and no major. Fixed at Matheus's request: m1 (money compared as strings in tests, never `number`), m2 (duplicate probe ports refused), m3 (R-47 across processes: same key, two payloads, one 200 and one 409), m5 (the R-66 wait is tied to the runner's backend through `pg_blocking_pids`). Recorded: m4 (pool wait, for S12) and m6 (harness stop and stderr, for S9), above. The S4 caveat is closed: R-39 and R-47 are now proven across three processes. Mutation runs (global advisory lock, hash check off, failing `afterAll`) are listed in `docs/tasks/S5.md`.
+
+## Findings from S6 that later slices depend on
+
+- **Decisions of 13 Nov (docs/tasks/S6.md).** Q1: a missing reference, or one that is itself `PENDING_REFERENCE` (L-10), is persisted `PENDING_REFERENCE` with `next_attempt_at = created_at` and answered 202 with the observed balance. Q2 (L-09): `WIN` and `LOSS` may reference a `PROCESSED` `BET` of the same player, wallet, currency and round; no amount check, and a reversed `BET` can still be referenced (ARCHITECTURE §9).
+- **Rules live in the domain.** `WagerTransaction.referenceFailure(reference, alreadyReversed)` returns the first broken rule in the order ownership → kind → status → amount → single reversal; the last two bind only `REFUND` and `ROLLBACK`. A `PENDING_REFERENCE` reference breaks no rule: the use case then waits.
+- **Order inside the transaction:** S4's order, then, after the player and currency checks, `transactions.findByExternalId(providerId, reference)` (any wallet) and, for a reversal, `transactions.hasProcessedReversal(referenceId)` (the predicate of `wager_transactions_single_reversal`). Both reads are after the wallet lock, so two reversals of one `BET` are serialised and the second sees the first. The index is a backstop the lock makes unreachable; if it ever fires it is a 500, not an answer.
+- **For S7.** A `PENDING_REFERENCE` row is only ever inserted; S7 owns the attempts and the backoff (`shortcut:` in `toWagerTransactionRecord`) and the `WagerTransactionPendingReference` event (`shortcut:` in `ProcessWagerTransaction`: a waiting row emits no event yet). The worker must call the same reference resolution under the wallet lock and then `markProcessed(reference.id, …)` or `reject`.
+- **Independent review (13 Nov).** The `invariant-reviewer` found no blocker and no major. Fixed at Matheus's request: m1 (L-09 and ARCHITECTURE §9 now say that a `BET` settled by a `WIN` can still be reversed and that several `WIN`s may reference one `BET`), m2 (second `ROLLBACK` of a `WIN` and of a `REFUND` over HTTP), m3 (R-42 back to `in progress`, R-40 to `in progress`, R-35 cites the lookup test), m4 (the branch is created before the commit). Caveat for S7: the worker must lock the wallet before it re-evaluates `referenceFailure` and `hasProcessedReversal`, or single reversal rests on the index alone.
+- **Test order within S6.** T1 to T7 were test-first and seen failing for the expected reason (missing method, missing scope reads, `wager_transactions_next_attempt_when_pending`, 400 from the closed schema). T8 passed on the first run, as the task predicted: the wallet lock already serialises the races. Three cases of the S4 400 list (`REFUND`, `ROLLBACK` and `WIN` with a reference) became valid by design and were replaced by the L-18 cases that stay 400 (reference missing, `BET` with one, self reference, empty, too long, not a string).

@@ -230,6 +230,8 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 | L-03 | `BET`, `WIN`, `REFUND` and `ROLLBACK` require a positive amount. `LOSS` and the opening balance accept zero. |
 | L-06 | `PENDING` is the initial in-memory state and is never committed; HTTP is synchronous. The schema refuses it. |
 | L-08 | A transaction for an unknown wallet is not persisted: 404 over HTTP; on SQS, ack with log, metric and inbox row. |
+| L-09 | `WIN` and `LOSS` may reference a `BET`: a `PROCESSED` `BET` of the same player, wallet, currency and round. No amount check, and a reversed `BET` can still be referenced. The rules bind the reference, not the settlement of the round. |
+| L-10 | A `REJECTED` or `FAILED` reference is `REFERENCE_NOT_PROCESSED`. A missing reference, or one that is itself `PENDING_REFERENCE`, makes the transaction wait as `PENDING_REFERENCE` (202). |
 | L-16 | A currency is any ISO-4217 code by shape, three uppercase letters, with no allow-list; every currency is handled at a scale of two. The challenge runs in `BRL`, the model stays multi-currency. |
 | L-17 | One amount has one spelling: digits, a dot and two decimals, with no sign, no whitespace, no leading zeros and at most 17 integer digits, the range of `NUMERIC(19,2)`. |
 | L-18 | `REFUND` and `ROLLBACK` require a reference; `WIN` and `LOSS` accept one; `BET` and `OPENING` refuse one. A transaction cannot reference itself. Violations are invalid requests, not persisted rejections. |
@@ -248,6 +250,7 @@ The remaining proposed interpretations are listed in [docs/spec/REQUIREMENTS.md]
 
 - Fixed scale of two decimals for every currency. A code is validated by shape only, so a currency with another minor unit, such as JPY or KWD, is accepted and handled at two decimals, which is wrong for it; those currencies are out of scope.
 - A `WIN` without a reference is credited without requiring a `BET` in the round.
+- No round settlement (L-09): the reference rules bind the round and the kind, not the outcome of the bet. A `WIN` may reference a `BET` that was already refunded or rolled back; a `BET` already settled by a `WIN` can still be refunded (100 → `BET` 30 → 70 → `WIN` 75 → 145 → `REFUND` 30 → 175); several `WIN`s may reference the same `BET`. Closing it needs a round model (a settled flag or a unique processed settlement per `BET`), which the statement does not define.
 - That a transaction's `playerId` is its wallet's owner is a rule of the use case (`WALLET_PLAYER_MISMATCH`), not of the schema: a rejected row stores the wrong player on purpose, so the guarantee would need a check limited to `PROCESSED` rows or a trigger (S4 review, m6).
 - No global ordering of events; ordering is per wallet and best-effort across publisher batches.
 - A hot wallet is processed serially by design; its throughput is bounded by the duration of one transaction.

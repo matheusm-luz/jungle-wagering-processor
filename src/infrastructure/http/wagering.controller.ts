@@ -18,8 +18,8 @@ import {
 
 /**
  * Closed field list (ADR-03): an unknown field is a 400, so nothing outside the hash can vary.
- * `OPENING` is internal. References arrive with S6, so `REFUND`, `ROLLBACK` and
- * `referenceExternalTransactionId` are still unknown here.
+ * `OPENING` is internal. Which kinds require, accept or refuse a reference (L-18) is checked by
+ * `WagerTransaction.create`, also a 400.
  */
 const wagerSchema = z.strictObject({
   providerId: identifierSchema.refine((value) => value !== 'SYSTEM', 'is reserved'),
@@ -28,8 +28,15 @@ const wagerSchema = z.strictObject({
   walletId: uuidSchema,
   roundId: identifierSchema,
   gameId: identifierSchema,
-  kind: z.enum([WagerTransactionKind.Bet, WagerTransactionKind.Win, WagerTransactionKind.Loss]),
+  kind: z.enum([
+    WagerTransactionKind.Bet,
+    WagerTransactionKind.Win,
+    WagerTransactionKind.Loss,
+    WagerTransactionKind.Refund,
+    WagerTransactionKind.Rollback,
+  ]),
   money: moneySchema,
+  referenceExternalTransactionId: identifierSchema.optional(),
 });
 
 /** ADR-06: the status comes from the persisted state, so a replay answers like the first call. */

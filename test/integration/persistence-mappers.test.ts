@@ -144,4 +144,35 @@ describe('persistence mappers', () => {
     expect(rejected.processedAt).toBeUndefined();
     expect(rejected.failureCode).toBe(FailureCode.InsufficientFunds);
   });
+
+  test('a PENDING_REFERENCE transaction is stored due at once and read back (S6, Q1)', async () => {
+    const s = scenario();
+    await persist(s);
+    const waiting = WagerTransaction.create({
+      id: newId(),
+      providerId: 'provider-a',
+      externalTransactionId: `refund-${newId()}`,
+      idempotencyKey: `key-${newId()}`,
+      payloadHash: 'd'.repeat(64),
+      walletId: s.wallet.id,
+      playerId: s.wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Refund,
+      money: brl('10.00'),
+      referenceExternalTransactionId: 'bet-not-yet',
+      createdAt: REJECTED_AT,
+    });
+    waiting.markPendingReference(s.wallet.balance);
+
+    const em = orm.em.fork();
+    await em.insert(WagerTransactionRecord, toWagerTransactionRecord(waiting));
+
+    const [row] = await sql`
+      select next_attempt_at, reference_attempts from wager_transactions where id = ${waiting.id}`;
+    expect(row).toEqual({ next_attempt_at: REJECTED_AT, reference_attempts: 0 });
+    expect(
+      toWagerTransaction(await em.findOneOrFail(WagerTransactionRecord, waiting.id)),
+    ).toStrictEqual(waiting);
+  });
 });

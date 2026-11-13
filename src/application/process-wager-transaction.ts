@@ -23,7 +23,7 @@ import {
   WalletNotFoundError,
 } from './errors';
 import { payloadHash } from './payload-hash';
-import type { Clock, IdGenerator, UnitOfWork } from './ports';
+import type { Clock, IdGenerator, TransactionScope, UnitOfWork } from './ports';
 
 export interface ProcessWagerTransactionCommand {
   /** The `Idempotency-Key` header, or `data.idempotencyKey` on SQS. Not part of the hash. */
@@ -36,6 +36,8 @@ export interface ProcessWagerTransactionCommand {
   gameId: string;
   kind: WagerTransactionKind;
   money: Money;
+  /** Required for `REFUND` and `ROLLBACK`, optional for `WIN` and `LOSS` (L-18). Hashed. */
+  referenceExternalTransactionId?: string | undefined;
   correlationId: string;
 }
 
@@ -94,13 +96,14 @@ export class ProcessWagerTransaction {
       });
 
       const lockedVersion = wallet.version;
-      const entry = this.apply(transaction, wallet, entryId, at);
+      const entry = await this.apply(scope, transaction, wallet, entryId, at);
       const events: IntegrationEvent<object>[] = [];
       if (transaction.status === WagerTransactionStatus.Rejected) {
         events.push(WagerTransactionRejected.from(transaction, wallet, context()));
-      } else {
+      } else if (transaction.status === WagerTransactionStatus.Processed) {
         events.push(WagerTransactionProcessed.from(transaction, wallet, context()));
       }
+      // shortcut: PENDING_REFERENCE emits nothing yet; WagerTransactionPendingReference is S7.
       if (entry !== undefined) {
         events.push(WalletBalanceChanged.from(wallet, entry, context()));
       }
@@ -129,15 +132,17 @@ export class ProcessWagerTransaction {
   }
 
   /**
-   * Settles the transaction against the locked wallet: `PROCESSED` with the movement, or
-   * `REJECTED` with the wallet untouched (statement §7.6). The entry is undefined when nothing moved.
+   * Settles the transaction against the locked wallet: `PROCESSED` with the movement, `REJECTED`
+   * with the wallet untouched (statement §7.6), or `PENDING_REFERENCE` when the reference is not
+   * there yet. The entry is undefined when nothing moved.
    */
-  private apply(
+  private async apply(
+    scope: TransactionScope,
     transaction: WagerTransaction,
     wallet: Wallet,
     entryId: string,
     at: Date,
-  ): WalletLedgerEntry | undefined {
+  ): Promise<WalletLedgerEntry | undefined> {
     if (wallet.playerId !== transaction.playerId) {
       transaction.reject(FailureCode.WalletPlayerMismatch, wallet.balance);
       return undefined;
@@ -146,8 +151,37 @@ export class ProcessWagerTransaction {
       transaction.reject(FailureCode.CurrencyMismatch, wallet.balance);
       return undefined;
     }
+
+    // ARCHITECTURE §2 step 8. A reference of this wallet is covered by its lock, and so is the
+    // lookup of an earlier reversal: two reversals of one BET are serialised (L-01). A reference of
+    // another wallet is only read, and ends in REFERENCE_MISMATCH.
+    const declared = transaction.referenceExternalTransactionId;
+    const reference =
+      declared === undefined
+        ? undefined
+        : await scope.transactions.findByExternalId(transaction.providerId, declared);
+    if (declared !== undefined) {
+      const failure =
+        reference === undefined
+          ? undefined
+          : transaction.referenceFailure(
+              reference,
+              transaction.requiresReference() &&
+                (await scope.transactions.hasProcessedReversal(reference.id)),
+            );
+      if (failure !== undefined) {
+        transaction.reject(failure, wallet.balance);
+        return undefined;
+      }
+      // Missing, or itself waiting (L-10): wait for it (docs/tasks/S6.md, Q1).
+      if (reference?.status !== WagerTransactionStatus.Processed) {
+        transaction.markPendingReference(wallet.balance);
+        return undefined;
+      }
+    }
+
     if (!transaction.affectsBalance()) {
-      transaction.markProcessed(undefined, wallet.balance, at);
+      transaction.markProcessed(reference?.id, wallet.balance, at);
       return undefined;
     }
 
@@ -155,14 +189,16 @@ export class ProcessWagerTransaction {
     let entry: WalletLedgerEntry;
     try {
       entry =
-        transaction.ledgerDirectionFor() === LedgerDirection.Debit
+        transaction.ledgerDirectionFor(reference) === LedgerDirection.Debit
           ? wallet.debit(movement)
           : wallet.credit(movement);
     } catch (error) {
       // Both leave the wallet unchanged (Wallet.apply checks before it assigns).
       const code =
         error instanceof InsufficientFundsError
-          ? FailureCode.InsufficientFunds
+          ? transaction.requiresReference()
+            ? FailureCode.ReversalWouldOverdraw
+            : FailureCode.InsufficientFunds
           : error instanceof MoneyOutOfRangeError
             ? FailureCode.BalanceLimitExceeded
             : undefined;
@@ -170,7 +206,7 @@ export class ProcessWagerTransaction {
       transaction.reject(code, wallet.balance);
       return undefined;
     }
-    transaction.markProcessed(undefined, wallet.balance, at);
+    transaction.markProcessed(reference?.id, wallet.balance, at);
     return entry;
   }
 }

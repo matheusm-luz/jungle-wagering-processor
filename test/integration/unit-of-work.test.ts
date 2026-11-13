@@ -20,7 +20,13 @@ import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-o
 import { migratedDatabase } from '../support/database';
 import { expectLedgerInvariant } from '../support/ledger-invariant';
 import { startOrm } from '../support/orm';
-import { newId, seedWallet, unusedCurrency } from '../support/schema-fixtures';
+import {
+  applyTransaction,
+  newId,
+  seedWallet,
+  transactionRow,
+  unusedCurrency,
+} from '../support/schema-fixtures';
 
 let sql: SQL;
 let orm: MikroORM;
@@ -391,5 +397,55 @@ describe('TransactionScope under the wallet lock', () => {
       version: 1,
       transactions: 1,
     });
+  });
+});
+
+describe('TransactionScope reference reads (S6)', () => {
+  test('findByExternalId finds a transaction of any wallet by provider and external id', async () => {
+    const { wallet } = await seedWallet(sql, '100.00');
+    const placed = bet(wallet.id as string);
+    await unitOfWork.run(placed.write);
+    const find = (providerId: string, externalTransactionId: string) =>
+      unitOfWork.run((scope) =>
+        scope.transactions.findByExternalId(providerId, externalTransactionId),
+      );
+
+    expect(await find('provider-uow', placed.externalTransactionId)).toEqual(
+      placed.transaction() as WagerTransaction,
+    );
+    expect(await find('other-provider', placed.externalTransactionId)).toBeUndefined();
+    expect(await find('provider-uow', 'missing')).toBeUndefined();
+  });
+
+  test('hasProcessedReversal is true only for a PROCESSED REFUND or ROLLBACK of that reference', async () => {
+    const { wallet } = await seedWallet(sql, '100.00');
+    const bet = await applyTransaction(sql, transactionRow(wallet, { amount: '10.00' }));
+    const win = await applyTransaction(sql, transactionRow(wallet, { kind: 'WIN' }));
+    const reverse = (reference: typeof bet, overrides: Record<string, unknown>) =>
+      applyTransaction(
+        sql,
+        transactionRow(wallet, {
+          kind: 'REFUND',
+          reference_external_transaction_id: reference.external_transaction_id,
+          reference_transaction_id: reference.id,
+          ...overrides,
+        }),
+      );
+    // A rejected reversal and a WIN referencing the BET do not count.
+    await reverse(bet, {
+      status: 'REJECTED',
+      failure_code: 'REFERENCE_AMOUNT_MISMATCH',
+      reference_transaction_id: null,
+      processed_at: null,
+    });
+    await reverse(bet, { kind: 'WIN' });
+    const has = (id: unknown) =>
+      unitOfWork.run((scope) => scope.transactions.hasProcessedReversal(id as string));
+
+    expect(await has(bet.id)).toBe(false);
+    await reverse(win, { kind: 'ROLLBACK' });
+    expect(await has(win.id)).toBe(true);
+    await reverse(bet, {});
+    expect(await has(bet.id)).toBe(true);
   });
 });

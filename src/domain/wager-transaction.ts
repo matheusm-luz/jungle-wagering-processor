@@ -38,6 +38,9 @@ export const SUBMITTABLE_KINDS: readonly WagerTransactionKind[] = [
   Kind.Rollback,
 ];
 
+/** The kinds that cannot exist without `referenceExternalTransactionId` (statement §7.1). */
+const REQUIRES_REFERENCE: readonly WagerTransactionKind[] = [Kind.Refund, Kind.Rollback];
+
 /**
  * The whole state machine (ARCHITECTURE §5). A status that maps to an empty list is terminal.
  */
@@ -131,7 +134,7 @@ export class WagerTransaction {
     }
 
     if (reference === undefined) {
-      if (kind === Kind.Refund || kind === Kind.Rollback) {
+      if (REQUIRES_REFERENCE.includes(kind)) {
         throw new InvalidTransactionError(`${kind} requires referenceExternalTransactionId`);
       }
     } else {
@@ -288,7 +291,7 @@ export class WagerTransaction {
   }
 
   requiresReference(): boolean {
-    return this.kind === Kind.Refund || this.kind === Kind.Rollback;
+    return REQUIRES_REFERENCE.includes(this.kind);
   }
 
   /** Same idempotency key and same hash is a replay; a different hash is a conflict. */

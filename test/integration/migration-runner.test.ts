@@ -5,6 +5,7 @@ import { SQL } from 'bun';
 import { loadEnv } from '../../src/config/env';
 import { JsonLogger } from '../../src/infrastructure/logging/json-logger';
 import { runMigrations } from '../../src/infrastructure/persistence/migration-runner';
+import { expectLedgerInvariantOnSuiteDatabase } from '../support/ledger-invariant';
 
 class CreateProbe extends Migration {
   override up(): void {
@@ -93,4 +94,8 @@ describe('migration runner', () => {
 
     expect(await runMigrations(env, logger, 'up')).toEqual([]);
   });
+});
+
+afterAll(async () => {
+  await expectLedgerInvariantOnSuiteDatabase();
 });

@@ -51,7 +51,7 @@ Docker must be running for everything except `typecheck`, `lint` and `test:unit`
 | `bun run lint` | Biome check; `bun run lint:fix` applies formatting and safe fixes | exists |
 | `bun run test:unit` | Tests with no I/O | exists |
 | `bun run test:integration` | Real PostgreSQL and LocalStack. Builds the `test` image and runs the suite inside it, through Docker Compose | exists |
-| `bun run test:concurrency` | Real parallelism, three or more app processes | planned, S5 |
+| `bun run test:concurrency` | Real parallelism: spawns three `bun src/main.ts` processes inside the `test` container (`test/support/processes.ts`) | exists |
 | `bun run test:load` | Optional load test | planned, optional |
 | `bun run migrate up` / `down` | Apply pending migrations, or revert the latest one, on `DATABASE_URL` | exists |
 | `bun run start` | Run one instance on the host; needs `.env` (see `.env.example`) | exists |

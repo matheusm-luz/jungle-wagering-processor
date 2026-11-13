@@ -54,3 +54,6 @@ export class InvalidTransactionError extends DomainError {}
 
 /** A transition that the state machine does not allow. A programming error, not a business path. */
 export class InvalidTransactionStateError extends DomainError {}
+
+/** An integration event built from state that does not describe it, such as a pending transaction. */
+export class InvalidIntegrationEventError extends DomainError {}

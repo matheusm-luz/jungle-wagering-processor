@@ -1,5 +1,6 @@
 import { InvalidTransactionError, InvalidTransactionStateError } from './errors';
 import { FailureCode } from './failure-code';
+import { LedgerAccountKind, type LedgerCounterparty } from './ledger-account';
 import type { Money } from './money';
 import { LedgerDirection } from './wallet-ledger-entry';
 
@@ -332,6 +333,24 @@ export class WagerTransaction {
           default:
             throw new InvalidTransactionError('ROLLBACK can only invert a BET, a WIN or a REFUND');
         }
+      case Kind.Loss:
+        throw new InvalidTransactionError('LOSS does not move the balance');
+    }
+  }
+
+  /**
+   * The system account on the other side of this transaction's ledger entry (ADR-12): `OPENING`
+   * posts against `FUNDING`, gameplay against the settlement account of its provider.
+   */
+  counterparty(): LedgerCounterparty {
+    switch (this.kind) {
+      case Kind.Opening:
+        return { kind: LedgerAccountKind.Funding };
+      case Kind.Bet:
+      case Kind.Win:
+      case Kind.Refund:
+      case Kind.Rollback:
+        return { kind: LedgerAccountKind.ProviderSettlement, providerId: this.providerId };
       case Kind.Loss:
         throw new InvalidTransactionError('LOSS does not move the balance');
     }

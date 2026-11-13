@@ -258,6 +258,21 @@ describe('wager_transactions checks', () => {
     await insertTransaction(sql, pendingReference({ kind: 'LOSS', amount: '0.00' }));
   });
 
+  test('SYSTEM is reserved for OPENING, and OPENING belongs to SYSTEM', async () => {
+    // The identity of the internal opening is not a provider's to claim (S3 review, M1).
+    for (const kind of ['BET', 'WIN', 'LOSS']) {
+      await expectRefused(
+        insertTransaction(sql, rejected({ kind, provider_id: 'SYSTEM' })),
+        check('wager_transactions_system_provider_only_for_opening'),
+      );
+    }
+    await expectRefused(
+      insertTransaction(sql, rejected({ kind: 'OPENING', provider_id: 'provider-a' })),
+      check('wager_transactions_system_provider_only_for_opening'),
+    );
+    await insertTransaction(sql, rejected({ kind: 'OPENING', provider_id: 'SYSTEM' }));
+  });
+
   test('refuses a self-reference', async () => {
     const externalId = `ext-${newId()}`;
     await expectRefused(

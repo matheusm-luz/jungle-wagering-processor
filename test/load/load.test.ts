@@ -126,7 +126,8 @@ test(
     const sent: Sent[] = [];
     let lagMax = 0;
     let sqsSent = 0;
-    const sqsIds: string[] = [];
+    // Counted by game id, not by a list of ids: an IN list is bound to PostgreSQL's 65 535 parameters.
+    const sqsGame = `load-sqs-${newId()}`;
     const deadline = performance.now() + DURATION_S * 1000;
     let request = 0;
 
@@ -174,8 +175,7 @@ test(
       while (performance.now() < deadline) {
         const tick = performance.now();
         const wallet = pick();
-        const b = body(wallet, 'BET', '1.00');
-        sqsIds.push(b.externalTransactionId);
+        const b = { ...body(wallet, 'BET', '1.00'), gameId: sqsGame };
         await queues.sendRaw(
           JSON.stringify(
             wagerMessage({ ...b, idempotencyKey: `${PROVIDER}:${b.externalTransactionId}` }),
@@ -204,8 +204,8 @@ test(
 
     const sqsDrain = await waitFor(async () => {
       const [{ n }] =
-        await sql`select count(*)::int as n from wager_transactions where provider_id = ${PROVIDER} and external_transaction_id in ${sql(sqsIds)}`;
-      return n === sqsIds.length;
+        await sql`select count(*)::int as n from wager_transactions where provider_id = ${PROVIDER} and game_id = ${sqsGame}`;
+      return n === sqsSent;
     }, 120_000);
     const outboxDrain = await waitFor(
       async () => (await gauge('outbox_pending_messages')) === 0,

@@ -83,7 +83,7 @@ curl -s -X POST $API/wagering/transactions -H 'content-type: application/json' \
 # 409 {"code":"IDEMPOTENCY_KEY_CONFLICT","message":"The idempotency key was already used with another payload"}
 ```
 
-Um `REFUND` que chega antes do seu `BET` espera (`202 PENDING_REFERENCE`). O worker de referências pendentes o aplica quando o `BET` existir (backoff de 1 s dobrando até 60 s, 10 tentativas, ADR-05).
+Um `REFUND` que chega antes do seu `BET` espera (`202 PENDING_REFERENCE`). O worker de referências pendentes o aplica quando o `BET` existir (backoff de 1 s dobrando até 60 s, 10 tentativas, ADR-05). O `BET` não o acorda: o worker o encontra na próxima tentativa, em menos de um segundo quando o `BET` vem logo em seguida, como abaixo, ou até 60 s depois nos outros casos. Um `BET` que chega depois da última tentativa, cerca de 4 minutos após o `REFUND`, chega tarde: o `REFUND` termina `REJECTED` com `REFERENCE_NOT_FOUND` (L-10).
 
 ```bash
 REFUND='{"providerId":"provider-a","externalTransactionId":"refund-2","playerId":"player-1","walletId":"'$WALLET'",
@@ -99,7 +99,7 @@ curl -s -X POST $API/wagering/transactions -H 'content-type: application/json' \
   -H 'Idempotency-Key: provider-a:bet-2' -d "$BET2"
 # 200 {…,"status":"PROCESSED","balance":{"amount":"50.00","currency":"BRL"},…}
 
-curl -s $API/providers/provider-a/wagering/transactions/refund-2     # um segundo depois
+curl -s $API/providers/provider-a/wagering/transactions/refund-2     # repita até sair de PENDING_REFERENCE
 # {…,"kind":"REFUND","referenceTransactionId":"01a1d8d5-1beb-…","status":"PROCESSED","balance":{"amount":"70.00","currency":"BRL"},…}
 ```
 
@@ -196,7 +196,7 @@ A entrega é at-least-once, ordenada por wallet dentro de um lote do publisher: 
 | `bun run test:concurrency` | Três processos `bun src/main.ts` reais: 50 cópias paralelas de uma aposta, a corrida das duas apostas de 80, wallets distintas em paralelo, processo morto depois do commit e antes do ack, publishers mortos no meio do lote, reversões antes da referência, processo morto sob carga e substituído | sim |
 | `bun run test:load` | Experimento de carga opcional, cerca de dois minutos (ver [docs/LOAD-TEST.md](docs/LOAD-TEST.md)) | sim |
 
-As suítes com Docker constroem uma imagem `test` e rodam dentro dela, contra o PostgreSQL do Compose (num banco separado, `wagering_test`) e o LocalStack, então se comportam igual em Linux, macOS, Windows e no CI. Elas sobem as dependências sozinhas; o container da aplicação não é necessário. Todo arquivo de integração, concorrência e carga termina verificando que o saldo de cada wallet é igual ao saldo reconstruído pelo seu ledger. Os mesmos comandos rodam em todo pull request (`.github/workflows/ci.yml`).
+As suítes com Docker constroem uma imagem `test` e rodam dentro dela, contra o PostgreSQL do Compose (num banco separado, `wagering_test`) e o LocalStack, então se comportam igual em Linux, macOS, Windows e no CI. Elas sobem as dependências sozinhas; o container da aplicação não é necessário. Todo arquivo de integração, concorrência e carga termina verificando que o saldo de cada wallet é igual ao saldo reconstruído pelo seu ledger. Os mesmos comandos, exceto o experimento de carga, rodam em todo pull request (`.github/workflows/ci.yml`).
 
 Um arquivo de integração: `docker compose --profile test run --rm --build test bun test ./test/integration/<arquivo>`.
 

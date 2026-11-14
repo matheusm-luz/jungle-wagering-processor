@@ -83,7 +83,7 @@ curl -s -X POST $API/wagering/transactions -H 'content-type: application/json' \
 # 409 {"code":"IDEMPOTENCY_KEY_CONFLICT","message":"The idempotency key was already used with another payload"}
 ```
 
-A `REFUND` that arrives before its `BET` waits (`202 PENDING_REFERENCE`). The pending-reference worker applies it once the `BET` exists (backoff 1 s doubling up to 60 s, 10 attempts, ADR-05).
+A `REFUND` that arrives before its `BET` waits (`202 PENDING_REFERENCE`). The pending-reference worker applies it once the `BET` exists (backoff 1 s doubling up to 60 s, 10 attempts, ADR-05). The `BET` does not wake it: the worker finds it on its next attempt, within a second when the `BET` follows at once as below, up to 60 s later otherwise. A `BET` that arrives after the last attempt, about 4 minutes after the `REFUND`, is too late: the `REFUND` ends `REJECTED` with `REFERENCE_NOT_FOUND` (L-10).
 
 ```bash
 REFUND='{"providerId":"provider-a","externalTransactionId":"refund-2","playerId":"player-1","walletId":"'$WALLET'",
@@ -99,7 +99,7 @@ curl -s -X POST $API/wagering/transactions -H 'content-type: application/json' \
   -H 'Idempotency-Key: provider-a:bet-2' -d "$BET2"
 # 200 {…,"status":"PROCESSED","balance":{"amount":"50.00","currency":"BRL"},…}
 
-curl -s $API/providers/provider-a/wagering/transactions/refund-2     # a second later
+curl -s $API/providers/provider-a/wagering/transactions/refund-2     # repeat until it is no longer PENDING_REFERENCE
 # {…,"kind":"REFUND","referenceTransactionId":"01a1d8d5-1beb-…","status":"PROCESSED","balance":{"amount":"70.00","currency":"BRL"},…}
 ```
 
@@ -196,7 +196,7 @@ Delivery is at least once, ordered per wallet within a publisher batch: a consum
 | `bun run test:concurrency` | Three real `bun src/main.ts` processes: 50 parallel copies of one bet, the two-bets-of-80 race, distinct wallets in parallel, a process killed after commit and before ack, publishers killed mid-batch, reversals before their reference, a process killed under load and replaced | yes |
 | `bun run test:load` | Optional load experiment, about two minutes (see [docs/LOAD-TEST.md](docs/LOAD-TEST.md)) | yes |
 
-The Docker suites build a `test` image and run inside it, against the Compose PostgreSQL (a separate `wagering_test` database) and LocalStack, so they behave the same on Linux, macOS, Windows and CI. They start the dependencies themselves; the application container is not needed. Every integration, concurrency and load file ends by checking that each wallet's balance equals the balance rebuilt from its ledger. The same commands run on every pull request (`.github/workflows/ci.yml`).
+The Docker suites build a `test` image and run inside it, against the Compose PostgreSQL (a separate `wagering_test` database) and LocalStack, so they behave the same on Linux, macOS, Windows and CI. They start the dependencies themselves; the application container is not needed. Every integration, concurrency and load file ends by checking that each wallet's balance equals the balance rebuilt from its ledger. The same commands, except the load experiment, run on every pull request (`.github/workflows/ci.yml`).
 
 One integration file: `docker compose --profile test run --rm --build test bun test ./test/integration/<file>`.
 

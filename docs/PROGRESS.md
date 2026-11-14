@@ -7,8 +7,8 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 | Item | Value |
 | --- | --- |
 | Statement received | 2026-11-12 10:32 |
-| Deadline | **2026-11-15 10:32** |
-| Last time informed | 2026-11-13 15:33 |
+| Deadline | **2026-11-15 08:00** (stated by Matheus on 14 Nov 14:33; the form closes earlier than the 10:32 of the statement e-mail) |
+| Last time informed | 2026-11-14 14:33 |
 | Budget stated on 12 Nov | 6h from 20:51, so the night session ends at about 02:50 on 13 Nov; 3.6h of it are used |
 | Daily budget | 10h |
 
@@ -16,11 +16,26 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S13 is done (14 Nov), committed on the branch `feat/s13-documentation`. Every slice is done.
+Every slice is on `main` (S13 is #13). On 14 Nov an independent audit of `3df6932` followed the README on a clean clone, ran every suite (all green, three times, twice from a cold state) and checked each disqualifying failure: none found. Its findings were fixed on the branch `fix/audit-findings` (see "Audit" below).
 
-1. S13 reaches `main` through a pull request with a green CI run.
-2. Optional before the freeze: `/sdd-analyze` over the whole repository (PLAN.md, "How slices are executed").
+1. `fix/audit-findings` reaches `main` through a pull request with a green CI run.
+2. Give the evaluators access to the repository (it is private) before 08:00 on 15 Nov.
 3. Submit from `main`.
+
+## Audit (14 Nov, after S13)
+
+Independent review of commit `3df6932` against the statement's 100-point table and the eight disqualifying failures. Result: no disqualifying failure, no failing README step, no P0. What was fixed on `fix/audit-findings`, one commit:
+
+- README: what to do when the host ports 5432 or 4566 are taken (`POSTGRES_HOST_PORT`, `LOCALSTACK_HOST_PORT`, which `compose.yaml` already accepted).
+- `.claude/`, `CLAUDE.md` and `AGENTS.md`, the assistant's working agreement and commands, removed from the repository; the four places that cited them (matrix E-8, two tests, the ledger helper) now cite the statement or the matrix.
+- ADR-13: why the ORM's change tracking and identity map are not used (native writes in foreign-key order, constraint names on the failing statement, no cached entity outside the wallet lock).
+- L-21: why the inbox is a table and not the `InboxMessage` class of statement §6.5.
+- ARCHITECTURE §1: the ports table named a port that does not exist; §2: the critical section as a Mermaid flowchart; §9: three limitations added (superuser database role, no retention of inbox and outbox rows, fixed pool size).
+- `causationId` of every event emitted for an SQS message is now the message id (statement §11), with a test; over HTTP it stays absent.
+- The DLQ-depth gauge bounds its SQS calls with `READINESS_TIMEOUT_MS`, like the readiness probes (a `shortcut:` comment was left there).
+- `SUBMITTABLE_KINDS` is the single list of kinds the API accepts, and `OPENING_PROVIDER_ID` the single spelling of the reserved provider id.
+
+Not done, by choice: unifying the error envelope of the Nest-generated 404 and 500 answers, and splitting the long ADR paragraphs.
 
 ## Phases
 
@@ -205,7 +220,7 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **Harness.** `test/support/topics.ts` (`createTestTopic`: private FIFO topic and raw-delivery subscriber, `take`, `collect`). The `test` service idles the publisher (`OUTBOX_POLL_INTERVAL_MS=1000000000`); a test turns it on per instance. Outbox test files retire the shared database's unpublished rows in `beforeAll`.
 - **Independent review (13 Nov).** No blocker, no major. Fixed in a second commit at Matheus's request: m1 (`DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS`, 15 s, on every application connection: a vanished host no longer holds locks until the TCP keepalive), m2 (publish-timeout test against a socket that never answers), m5 (poll intervals capped at 2³¹−1 ms, retry caps at least their base), m6 (crash tests without a readiness race). Recorded in ADR-04 and L-14: m3 (a broker that always answers late duplicates past the deduplication window) and m4 (order depends on instance clocks). Also fixed: the LocalStack healthcheck counts only the subscriptions of `wager-events.fifo`, so a test topic left behind no longer makes it unhealthy. Details in `docs/tasks/S10.md`.
 - **For S12.** `idle_in_transaction_session_timeout` ends a session from the server side; the test shows the application survives it (the error reaches the transaction, nothing crashes). S12 should map that error (25P03 / connection terminated) like the other transient database errors.
-- **Limit.** Across processes, a double publication is hidden by the broker's deduplication, so R-69's cross-process test proves no loss and no duplicate delivery; the lock is proven in process (mutation runs in docs/tasks/S10.md). A partial `PublishBatch` failure, which LocalStack cannot produce, is tested with a forged HTTP answer of the broker (real database and SDK): the one exception to invariant 8, recorded in `CLAUDE.md` (PR review).
+- **Limit.** Across processes, a double publication is hidden by the broker's deduplication, so R-69's cross-process test proves no loss and no duplicate delivery; the lock is proven in process (mutation runs in docs/tasks/S10.md). A partial `PublishBatch` failure, which LocalStack cannot produce, is tested with a forged HTTP answer of the broker (real database and SDK): the one documented exception to the no-mock rule (matrix E-8; PR review).
 
 ## Findings from S11 that later slices depend on
 

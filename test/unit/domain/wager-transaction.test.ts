@@ -226,7 +226,7 @@ describe('WagerTransaction creation', () => {
   });
 
   test('OPENING is not submittable', () => {
-    expect([...SUBMITTABLE_KINDS].sort()).toEqual(
+    expect([...SUBMITTABLE_KINDS].sort() as Kind[]).toEqual(
       [Kind.Bet, Kind.Win, Kind.Loss, Kind.Refund, Kind.Rollback].sort(),
     );
     expect(SUBMITTABLE_KINDS).not.toContain(Kind.Opening);

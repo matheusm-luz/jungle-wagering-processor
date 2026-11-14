@@ -36,6 +36,12 @@ docker compose up -d --build --wait
 
 This starts PostgreSQL, LocalStack (whose init script creates the queues, the DLQ, the SNS FIFO topic and its subscriber queue), a one-shot `migrate` container that applies the migrations, and one application instance. `--wait` returns when every service is healthy.
 
+PostgreSQL and LocalStack are published on the host ports 5432 and 4566. If either is taken (`Bind for 0.0.0.0:5432 failed: port is already allocated`), pick other ports; everything inside Compose, the test suites included, keeps talking to the containers directly (only a host run, `bun run start`, needs the new ports in its `.env`):
+
+```bash
+POSTGRES_HOST_PORT=5433 LOCALSTACK_HOST_PORT=4567 docker compose up -d --build --wait
+```
+
 The instance publishes its port 3000 on the first free host port between 3000 and 3002. Find it with:
 
 ```bash

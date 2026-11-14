@@ -436,7 +436,7 @@ describe('POST /wallets/:walletId/reconciliation (R-49)', () => {
       expect(logged).toEqual([
         expect.objectContaining({ level: 'error', walletId: wallet.id, checkedEntries: 2 }),
       ]);
-      // No amount reaches the log line (CLAUDE.md, logs).
+      // No amount reaches the log line (statement §12, R-60).
       expect(JSON.stringify(logged)).not.toContain('50.00');
       expect(JSON.stringify(logged)).not.toContain('75.00');
       // Never fixed: the stored balance is still the tampered one.

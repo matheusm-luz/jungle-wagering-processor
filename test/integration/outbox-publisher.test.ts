@@ -284,7 +284,7 @@ describe('outbox publisher', () => {
     );
   });
 
-  // The one forged broker answer of the suites (CLAUDE.md, invariant 8): LocalStack 4.12 never
+  // The one forged broker answer of the suites (docs/spec/REQUIREMENTS.md, E-8): LocalStack 4.12 never
   // answers a PublishBatch in part (an empty attribute or an oversized entry fails the whole call),
   // so this is the only way to prove that a refused entry is not marked published. The database and
   // the SDK are real; only the HTTP answer is written here, in the documented PublishBatch shape.

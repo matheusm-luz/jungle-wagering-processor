@@ -111,7 +111,7 @@ export interface TransactionScope {
 }
 
 /**
- * One SQL transaction (statement §11, invariant 6): everything `work` writes commits together, or
+ * One SQL transaction (statement §11): everything `work` writes commits together, or
  * nothing does when it throws. Nothing is published from inside it.
  */
 export interface UnitOfWork {

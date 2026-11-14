@@ -1,4 +1,4 @@
-# The checks of `/verify`, on every push and pull request: the same scripts, the same Compose
+# Every check of the README, on every push and pull request: the same scripts, the same Compose
 # stack (real PostgreSQL and LocalStack), the same Bun as the Dockerfile.
 name: ci
 

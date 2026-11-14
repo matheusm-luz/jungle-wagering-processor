@@ -1,7 +1,8 @@
 import { z } from 'zod';
+import { OPENING_PROVIDER_ID } from '../../application/open-wallet';
 import { InvalidMoneyError } from '../../domain/errors';
 import { Money, type MoneyProps } from '../../domain/money';
-import { WagerTransactionKind } from '../../domain/wager-transaction';
+import { SUBMITTABLE_KINDS } from '../../domain/wager-transaction';
 import { RequestValidationError } from './request-validation.error';
 
 /**
@@ -66,19 +67,13 @@ export const idempotencyKeySchema = z
  * `WagerTransaction.create`, also a 400.
  */
 export const wagerSchema = z.strictObject({
-  providerId: identifierSchema.refine((value) => value !== 'SYSTEM', 'is reserved'),
+  providerId: identifierSchema.refine((value) => value !== OPENING_PROVIDER_ID, 'is reserved'),
   externalTransactionId: identifierSchema,
   playerId: identifierSchema,
   walletId: uuidSchema,
   roundId: identifierSchema,
   gameId: identifierSchema,
-  kind: z.enum([
-    WagerTransactionKind.Bet,
-    WagerTransactionKind.Win,
-    WagerTransactionKind.Loss,
-    WagerTransactionKind.Refund,
-    WagerTransactionKind.Rollback,
-  ]),
+  kind: z.enum(SUBMITTABLE_KINDS),
   money: moneySchema,
   referenceExternalTransactionId: identifierSchema.optional(),
 });

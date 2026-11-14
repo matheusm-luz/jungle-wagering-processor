@@ -1,5 +1,5 @@
-# Personal Claude Code settings; the shared commands and agents in .claude/ are versioned.
-.claude/settings.local.json
+# Personal settings of AI coding assistants.
+.claude/
 
 .env
 *.log

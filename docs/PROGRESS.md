@@ -18,7 +18,7 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 S11 is done (14 Nov), committed on the branch `feat/s11-observability`. Next is S12, failure modes.
 
-1. S11 reaches `main` through a pull request, as S1 to S10 did; that push is also the first real run of the CI workflow. Then `/sdd-implement S12` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
+1. S11 reaches `main` through pull request #11, as S1 to S10 did; its CI run is green. Then `/sdd-implement S12` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
 2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations.
 
 ## Phases
@@ -214,7 +214,7 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **Log audit.** `test/integration/log-audit.test.ts` found no leak: the HTTP 500 line of a driver error carries MikroORM 7's message, which does not include the SQL or its parameters. A new log field must keep amounts out; the audit fails otherwise (mutation checked).
 - **Independent review (14 Nov).** No blocker; M1 (a NaN gauge passed `toBe`; `metricValue` now throws on NaN), m2, m4 to m8 fixed in a second commit at Matheus's request; m3 accepted in ADR-14; m1 (scrape reads without a timeout, on the financial pool) stays with S12. Details in `docs/tasks/S11.md`.
 - **Harness.** The `test` service now idles the pending-reference worker of spawned processes too (`PENDING_REFERENCE_POLL_INTERVAL_MS`); a concurrency test that needs it sets it, as `wallet-races` does. Found by the first CI run: a leftover REFUND rejected by a process leaked an event into the outbox concurrency test (docs/tasks/S11.md).
-- **CI.** `.github/workflows/ci.yml` runs typecheck, lint, unit, integration and concurrency on push to `main` and on pull requests, with Bun 1.4.4, the Compose stack and a read-only token. Its first run (PR #11) failed on the harness issue above; the fix is in a third commit.
+- **CI.** `.github/workflows/ci.yml` runs typecheck, lint, unit, integration and concurrency on push to `main` and on pull requests, with Bun 1.4.4, the Compose stack and a read-only token. Its first run (PR #11) failed on the harness issue above; it passed after `989bf6e` (unit 139, integration 199, concurrency 18).
 
 ## Slices
 

@@ -96,6 +96,10 @@ services:
       # publisher draining rows of other suites would make timings depend on them (as S7 does for
       # the pending-reference worker in test/support/app.ts).
       OUTBOX_POLL_INTERVAL_MS: "1000000000"
+      # The same for the pending-reference worker of spawned processes (startApp already idles it):
+      # left running, it rejected another suite's exhausted REFUND, and the event reached the topic
+      # of the outbox concurrency test (first CI run, PR #11).
+      PENDING_REFERENCE_POLL_INTERVAL_MS: "1000000000"
     depends_on:
       postgres:
         condition: service_healthy

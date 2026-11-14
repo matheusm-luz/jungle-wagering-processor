@@ -590,6 +590,41 @@ describe('TransactionScope pending references (S7)', () => {
   });
 });
 
+describe('idle in transaction timeout (S10 review, m1)', () => {
+  test('a session idle inside its transaction past the timeout is ended by the server, and its wallet lock released', async () => {
+    const shortOrm = await MikroORM.init(
+      buildOrmConfig({ ...testEnv, DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS: 300 }, silentLogger),
+    );
+    const { wallet } = await seedWallet(sql, '10.00');
+    let locked = () => {};
+    const isLocked = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    try {
+      // Stands for a client that vanished with the lock held: it never sends another statement.
+      const abandoned = new MikroOrmUnitOfWork(shortOrm, { newId })
+        .run(async (scope) => {
+          await scope.wallets.lock(wallet.id as string);
+          locked();
+          await Bun.sleep(2000);
+        })
+        .catch((error: unknown) => error);
+      await isLocked;
+
+      // Without the timeout this waits until the abandoned transaction ends, 2 s later.
+      const started = performance.now();
+      await sql.begin(async (tx) => {
+        await tx`set local lock_timeout = '1500ms'`;
+        await tx`select id from wallets where id = ${wallet.id as string} for update`;
+      });
+      expect(performance.now() - started).toBeLessThan(1500);
+      expect(await abandoned).toBeInstanceOf(Error);
+    } finally {
+      await shortOrm.close();
+    }
+  });
+});
+
 describe('lock timeout (ADR-01, docs/tasks/S9.md Q2)', () => {
   test('a wallet held longer than the lock timeout fails the waiting transaction with 55P03', async () => {
     const shortOrm = await MikroORM.init(

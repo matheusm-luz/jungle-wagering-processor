@@ -16,9 +16,9 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S9 is done (13 Nov), committed on the branch `feat/s9-sqs-consumer`. Next is S10, the outbox publisher.
+S10 is done (13 Nov), committed on the branch `feat/s10-outbox-publisher`. Next is S11, observability and CI.
 
-1. S9 reaches `main` through a pull request, as S1 to S8 did. Then `/sdd-implement S10` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
+1. S10 reaches `main` through a pull request, as S1 to S9 did. Then `/sdd-implement S11` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
 2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
 
 ## Phases
@@ -29,7 +29,7 @@ S9 is done (13 Nov), committed on the branch `feat/s9-sqs-consumer`. Next is S10
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0 to S9 done; next is S10 |
+| 4 | Implementation, slice by slice | S0 to S10 done; next is S11 |
 
 ## Decisions confirmed by Matheus (12 Nov, unless dated)
 
@@ -195,6 +195,17 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **For S12.** A failure the consumer cannot classify is retried and reaches the DLQ through the redrive policy, never `FAILED`: the `FAILED` path is still S12's. The pending-reference worker and the consumer both see SQS or PostgreSQL down as transient.
 - **Harness.** `startProcesses` exposes `exited` per process. Test queues must be read with `take` (deletes) or `peek` (visibility 0): a FIFO message left in flight blocks its group.
 
+## Findings from S10 that later slices depend on
+
+- **Decisions of 13 Nov (docs/tasks/S10.md).** Q1: `OutboxMessage` is a domain class, as statement §6.5 shows; the unit of work enqueues through it and the publisher rehydrates the locked rows. Q2: L-14 accepted.
+- **Publisher.** `src/infrastructure/messaging/outbox.publisher.ts`, in every instance: one transaction per batch (`SKIP LOCKED` scan of up to 10 due rows, one `PublishBatch` bounded by `OUTBOX_PUBLISH_TIMEOUT_MS`, mark or reschedule, commit). Group = wallet id, deduplication id = event id, `eventType` as a message attribute, body = the stored envelope. A failure is retried forever with backoff (ADR-04). The topic is `WAGER_EVENTS_TOPIC_ARN` (default: LocalStack's `wager-events.fifo`).
+- **For S11.** Outbox lag (R-61) can be computed from the unpublished rows, for example `now() - min(occurred_at)`; the partial index `outbox_messages_pending` covers `next_attempt_at`, not `occurred_at`. The publisher logs `outbox batch published` with counts, `outbox publish failed` and `outbox event not published` with the error name or SNS code only.
+- **For S12.** SNS down is already transient for the publisher: every failed call reschedules the batch with backoff and nothing is lost (proven with a missing topic). The publisher holds a pool connection during the call, bounded by the 3 s timeout. A failed transaction of the publisher itself (database down) is logged as `outbox poll failed` and retried after the poll interval.
+- **Harness.** `test/support/topics.ts` (`createTestTopic`: private FIFO topic and raw-delivery subscriber, `take`, `collect`). The `test` service idles the publisher (`OUTBOX_POLL_INTERVAL_MS=1000000000`); a test turns it on per instance. Outbox test files retire the shared database's unpublished rows in `beforeAll`.
+- **Independent review (13 Nov).** No blocker, no major. Fixed in a second commit at Matheus's request: m1 (`DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS`, 15 s, on every application connection: a vanished host no longer holds locks until the TCP keepalive), m2 (publish-timeout test against a socket that never answers), m5 (poll intervals capped at 2³¹−1 ms, retry caps at least their base), m6 (crash tests without a readiness race). Recorded in ADR-04 and L-14: m3 (a broker that always answers late duplicates past the deduplication window) and m4 (order depends on instance clocks). Also fixed: the LocalStack healthcheck counts only the subscriptions of `wager-events.fifo`, so a test topic left behind no longer makes it unhealthy. Details in `docs/tasks/S10.md`.
+- **For S12.** `idle_in_transaction_session_timeout` ends a session from the server side; the test shows the application survives it (the error reaches the transaction, nothing crashes). S12 should map that error (25P03 / connection terminated) like the other transient database errors.
+- **Limit.** Across processes, a double publication is hidden by the broker's deduplication, so R-69's cross-process test proves no loss and no duplicate delivery; the lock is proven in process (mutation runs in docs/tasks/S10.md). A partial `PublishBatch` failure, which LocalStack cannot produce, is tested with a forged HTTP answer of the broker (real database and SDK): the one exception to invariant 8, recorded in `CLAUDE.md` (PR review).
+
 ## Slices
 
 Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
@@ -213,7 +224,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | S7 | Pending references | 13 Nov | 1.5 | done 13 Nov |
 | S8 | Read side | 13 Nov | 1.0 | done 13 Nov |
 | S9 | SQS consumer | 14 Nov | 2.5 | done 13 Nov |
-| S10 | Outbox publisher | 14 Nov | 2.0 | todo |
+| S10 | Outbox publisher | 14 Nov | 2.0 | done 13 Nov |
 | S11 | Observability and CI | 14 Nov | 1.0 | todo |
 | S12 | Failure modes | 14 Nov | 1.0 | todo |
 | S13 | Documentation and delivery | 14 Nov | 3.0 | todo |

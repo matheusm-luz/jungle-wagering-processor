@@ -7,9 +7,9 @@ import { migrations } from './migrations';
 import { records } from './records';
 
 export function buildOrmConfig(
-  // No lock timeout for the migrator: DDL at deploy time may wait for its locks.
+  // No lock or idle timeout for the migrator: DDL at deploy time may wait for its locks.
   env: Pick<Env, 'DATABASE_URL' | 'DATABASE_CONNECT_TIMEOUT_MS'> &
-    Partial<Pick<Env, 'DATABASE_LOCK_TIMEOUT_MS'>>,
+    Partial<Pick<Env, 'DATABASE_LOCK_TIMEOUT_MS' | 'DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS'>>,
   logger: JsonLogger,
   migrationsList: MigrationObject[] = migrations,
 ) {
@@ -17,10 +17,12 @@ export function buildOrmConfig(
     clientUrl: env.DATABASE_URL,
     // Passed to the `pg` pool. Bounds a connection attempt to a server that stopped answering,
     // which would otherwise hang its caller and, at shutdown, `orm.close()`.
-    // `lock_timeout` goes in the startup packet of every connection: no extra round trip (ADR-01).
+    // `lock_timeout` and `idle_in_transaction_session_timeout` go in the startup packet of every
+    // connection: no extra round trip (ADR-01; S10 review, m1).
     driverOptions: {
       connectionTimeoutMillis: env.DATABASE_CONNECT_TIMEOUT_MS,
       lock_timeout: env.DATABASE_LOCK_TIMEOUT_MS,
+      idle_in_transaction_session_timeout: env.DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS,
     },
     // Explicit list, no globs.
     entities: records,

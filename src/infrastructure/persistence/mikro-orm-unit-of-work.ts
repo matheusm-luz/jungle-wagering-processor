@@ -9,6 +9,7 @@ import {
 import type { IdGenerator, TransactionScope, UnitOfWork } from '../../application/ports';
 import { ID_GENERATOR } from '../../application/tokens';
 import { LedgerAccountKind, type LedgerCounterparty } from '../../domain/ledger-account';
+import { OutboxMessage } from '../../domain/outbox-message';
 import { WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager-transaction';
 import {
   toLedgerEntryRecord,
@@ -202,7 +203,10 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
       outbox: {
         enqueue: async (events) => {
           if (events.length === 0) return;
-          await em.insertMany(OutboxMessageRecord, events.map(toOutboxMessageRecord));
+          await em.insertMany(
+            OutboxMessageRecord,
+            events.map((event) => toOutboxMessageRecord(OutboxMessage.enqueue(event))),
+          );
         },
       },
       inbox: {

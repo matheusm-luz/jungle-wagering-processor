@@ -1,7 +1,7 @@
 import type { RequiredEntityData } from '@mikro-orm/core';
-import type { IntegrationEvent } from '../../domain/events/integration-event';
 import { FailureCode } from '../../domain/failure-code';
 import { Money } from '../../domain/money';
+import { OutboxMessage } from '../../domain/outbox-message';
 import {
   WagerTransaction,
   WagerTransactionKind,
@@ -162,18 +162,30 @@ export function toLedgerEntry(row: LedgerEntryRow): WalletLedgerEntry {
 
 // ---- Outbox
 
-/** A pending outbox row: unpublished, no attempt yet, due at once (`next_attempt_at = occurred_at`). */
 export function toOutboxMessageRecord(
-  event: IntegrationEvent<object>,
+  message: OutboxMessage,
 ): RequiredEntityData<OutboxMessageRow> {
   return {
-    id: event.eventId,
-    aggregateId: event.aggregateId,
-    eventType: event.eventType,
-    payload: { ...event.toJSON() },
-    occurredAt: event.occurredAt,
-    attempts: 0,
-    nextAttemptAt: event.occurredAt,
-    publishedAt: null,
+    id: message.id,
+    aggregateId: message.aggregateId,
+    eventType: message.eventType,
+    payload: { ...message.payload },
+    occurredAt: message.occurredAt,
+    attempts: message.attempts,
+    nextAttemptAt: message.nextAttemptAt,
+    publishedAt: message.publishedAt ?? null,
   };
+}
+
+export function toOutboxMessage(row: OutboxMessageRow): OutboxMessage {
+  return OutboxMessage.rehydrate({
+    id: row.id,
+    aggregateId: row.aggregateId,
+    eventType: row.eventType,
+    payload: row.payload,
+    occurredAt: row.occurredAt,
+    attempts: row.attempts,
+    nextAttemptAt: row.nextAttemptAt,
+    publishedAt: optional(row.publishedAt),
+  });
 }

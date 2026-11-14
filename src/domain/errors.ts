@@ -57,3 +57,6 @@ export class InvalidTransactionStateError extends DomainError {}
 
 /** An integration event built from state that does not describe it, such as a pending transaction. */
 export class InvalidIntegrationEventError extends DomainError {}
+
+/** An outbox row that is already published was published or rescheduled again. */
+export class InvalidOutboxTransitionError extends DomainError {}

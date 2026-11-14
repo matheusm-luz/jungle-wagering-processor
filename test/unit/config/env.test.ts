@@ -30,6 +30,13 @@ describe('loadEnv', () => {
       PENDING_REFERENCE_MAX_ATTEMPTS: 10,
       PENDING_REFERENCE_POLL_INTERVAL_MS: 500,
       PENDING_REFERENCE_BATCH_SIZE: 10,
+      WAGER_EVENTS_TOPIC_ARN: 'arn:aws:sns:us-east-1:000000000000:wager-events.fifo',
+      OUTBOX_POLL_INTERVAL_MS: 500,
+      OUTBOX_BATCH_SIZE: 10,
+      OUTBOX_PUBLISH_TIMEOUT_MS: 3000,
+      OUTBOX_RETRY_BASE_DELAY_MS: 1000,
+      OUTBOX_RETRY_MAX_DELAY_MS: 60_000,
+      DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS: 15_000,
     });
   });
 
@@ -91,6 +98,60 @@ describe('loadEnv', () => {
     expect(load).toThrow(/DATABASE_URL/);
     expect(load).toThrow(/LOG_LEVEL/);
     expect(load).toThrow(/PORT/);
+  });
+
+  test('reads the outbox publisher settings and refuses a batch above the PublishBatch limit (ADR-04)', () => {
+    const env = loadEnv({
+      DATABASE_URL,
+      WAGER_EVENTS_TOPIC_ARN: 'arn:aws:sns:us-east-1:000000000000:other.fifo',
+      OUTBOX_POLL_INTERVAL_MS: '20',
+      OUTBOX_BATCH_SIZE: '3',
+      OUTBOX_PUBLISH_TIMEOUT_MS: '700',
+      OUTBOX_RETRY_BASE_DELAY_MS: '5',
+      OUTBOX_RETRY_MAX_DELAY_MS: '40',
+      OUTBOX_PUBLISHER_FAILPOINT: 'crash-after-publish',
+    });
+
+    expect(env).toMatchObject({
+      WAGER_EVENTS_TOPIC_ARN: 'arn:aws:sns:us-east-1:000000000000:other.fifo',
+      OUTBOX_POLL_INTERVAL_MS: 20,
+      OUTBOX_BATCH_SIZE: 3,
+      OUTBOX_PUBLISH_TIMEOUT_MS: 700,
+      OUTBOX_RETRY_BASE_DELAY_MS: 5,
+      OUTBOX_RETRY_MAX_DELAY_MS: 40,
+      OUTBOX_PUBLISHER_FAILPOINT: 'crash-after-publish',
+    });
+    expect(() => loadEnv({ DATABASE_URL, OUTBOX_BATCH_SIZE: '11' })).toThrow(/OUTBOX_BATCH_SIZE/);
+    expect(() => loadEnv({ DATABASE_URL, OUTBOX_PUBLISHER_FAILPOINT: 'other' })).toThrow(
+      /OUTBOX_PUBLISHER_FAILPOINT/,
+    );
+  });
+
+  test('refuses a poll interval setTimeout cannot hold, a retry cap below its base and an idle timeout the publish could reach (S10 review, m1 and m5)', () => {
+    const refused = (source: Record<string, string>, name: string) =>
+      expect(() => loadEnv({ DATABASE_URL, ...source })).toThrow(new RegExp(name));
+
+    // Above 2^31 - 1 ms, setTimeout fires at once: an idle loop would spin.
+    refused({ OUTBOX_POLL_INTERVAL_MS: '2147483648' }, 'OUTBOX_POLL_INTERVAL_MS');
+    refused(
+      { PENDING_REFERENCE_POLL_INTERVAL_MS: '2147483648' },
+      'PENDING_REFERENCE_POLL_INTERVAL_MS',
+    );
+    refused(
+      { OUTBOX_RETRY_BASE_DELAY_MS: '5000', OUTBOX_RETRY_MAX_DELAY_MS: '4000' },
+      'OUTBOX_RETRY_MAX_DELAY_MS',
+    );
+    refused(
+      { PENDING_REFERENCE_BASE_DELAY_MS: '5000', PENDING_REFERENCE_MAX_DELAY_MS: '4000' },
+      'PENDING_REFERENCE_MAX_DELAY_MS',
+    );
+    refused(
+      { OUTBOX_PUBLISH_TIMEOUT_MS: '3000', DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS: '3000' },
+      'DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS',
+    );
+    expect(
+      loadEnv({ DATABASE_URL, OUTBOX_POLL_INTERVAL_MS: '2147483647' }).OUTBOX_POLL_INTERVAL_MS,
+    ).toBe(2_147_483_647);
   });
 
   test('never echoes a value in the error', () => {

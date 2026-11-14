@@ -1,3 +1,4 @@
+import { SNSClient } from '@aws-sdk/client-sns';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { type DynamicModule, Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
@@ -19,6 +20,8 @@ import { HealthController } from './infrastructure/http/health.controller';
 import { WageringController } from './infrastructure/http/wagering.controller';
 import { WalletsController } from './infrastructure/http/wallets.controller';
 import { JsonLogger } from './infrastructure/logging/json-logger';
+import { OutboxPublisher } from './infrastructure/messaging/outbox.publisher';
+import { createSnsClient, SNS_CLIENT } from './infrastructure/messaging/sns.provider';
 import { createSqsClient, SQS_CLIENT } from './infrastructure/messaging/sqs.provider';
 import { WagerTransactionConsumer } from './infrastructure/messaging/wager-transaction.consumer';
 import { Metrics } from './infrastructure/metrics/metrics';
@@ -32,7 +35,10 @@ const uuidV7: IdGenerator = { newId: () => Bun.randomUUIDv7() };
 
 @Module({})
 export class AppModule implements OnApplicationShutdown {
-  constructor(@Inject(SQS_CLIENT) private readonly sqs: SQSClient) {}
+  constructor(
+    @Inject(SQS_CLIENT) private readonly sqs: SQSClient,
+    @Inject(SNS_CLIENT) private readonly sns: SNSClient,
+  ) {}
 
   static forRoot(env: Env, logger: JsonLogger): DynamicModule {
     return {
@@ -50,6 +56,7 @@ export class AppModule implements OnApplicationShutdown {
         { provide: ENV, useValue: env },
         { provide: JsonLogger, useValue: logger },
         { provide: SQS_CLIENT, useFactory: () => createSqsClient(env) },
+        { provide: SNS_CLIENT, useFactory: () => createSnsClient(env) },
         ReadinessService,
         { provide: APP_FILTER, useClass: ErrorFilter },
         { provide: CLOCK, useValue: systemClock },
@@ -81,6 +88,7 @@ export class AppModule implements OnApplicationShutdown {
         },
         PendingReferenceWorker,
         WagerTransactionConsumer,
+        OutboxPublisher,
         {
           provide: GetWallet,
           useFactory: (wallets: WalletQueries) => new GetWallet(wallets),
@@ -108,5 +116,6 @@ export class AppModule implements OnApplicationShutdown {
 
   onApplicationShutdown(): void {
     this.sqs.destroy();
+    this.sns.destroy();
   }
 }

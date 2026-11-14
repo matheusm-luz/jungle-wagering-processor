@@ -91,6 +91,10 @@ services:
       # Every app the suites start, in process or spawned, waits for its open long poll on
       # shutdown (R-56): a short one keeps each close under a second.
       SQS_WAIT_TIME_S: "1"
+      # The outbox publisher idles unless a test turns it on: the suite database is shared, and a
+      # publisher draining rows of other suites would make timings depend on them (as S7 does for
+      # the pending-reference worker in test/support/app.ts).
+      OUTBOX_POLL_INTERVAL_MS: "1000000000"
     depends_on:
       postgres:
         condition: service_healthy

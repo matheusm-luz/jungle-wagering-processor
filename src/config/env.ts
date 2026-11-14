@@ -31,6 +31,20 @@ const schema = z.object({
   PENDING_REFERENCE_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(10),
   PENDING_REFERENCE_POLL_INTERVAL_MS: z.coerce.number().int().min(1).default(500),
   PENDING_REFERENCE_BATCH_SIZE: z.coerce.number().int().min(1).default(10),
+  // Outbox publisher (ADR-04, ADR-11). The default is LocalStack's account; on AWS set the real ARN.
+  WAGER_EVENTS_TOPIC_ARN: z
+    .string()
+    .startsWith('arn:')
+    .default('arn:aws:sns:us-east-1:000000000000:wager-events.fifo'),
+  OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(1).default(500),
+  /** At most 10: the `PublishBatch` limit. */
+  OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(10).default(10),
+  /** The publisher holds its rows locked during this call, so it is short. */
+  OUTBOX_PUBLISH_TIMEOUT_MS: z.coerce.number().int().min(1).default(3000),
+  OUTBOX_RETRY_BASE_DELAY_MS: z.coerce.number().int().min(1).default(1000),
+  OUTBOX_RETRY_MAX_DELAY_MS: z.coerce.number().int().min(1).default(60_000),
+  /** ADR-09: test-only. Kills the process with its batch locked, before or after `PublishBatch`. */
+  OUTBOX_PUBLISHER_FAILPOINT: z.enum(['crash-before-publish', 'crash-after-publish']).optional(),
 });
 
 export type Env = Readonly<z.infer<typeof schema>>;

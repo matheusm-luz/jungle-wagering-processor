@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { Money } from '../../../src/domain/money';
+import type { OutboxMessage } from '../../../src/domain/outbox-message';
 import type { WagerTransaction } from '../../../src/domain/wager-transaction';
 import type { Wallet } from '../../../src/domain/wallet';
 import type { WalletLedgerEntry } from '../../../src/domain/wallet-ledger-entry';
@@ -20,14 +21,16 @@ describe('domain classes', () => {
     const wallet: IsConstructible<typeof Wallet> = false;
     const transaction: IsConstructible<typeof WagerTransaction> = false;
     const ledgerEntry: IsConstructible<typeof WalletLedgerEntry> = false;
+    const outboxMessage: IsConstructible<typeof OutboxMessage> = false;
 
     expect(new PublicControl('x').value).toBe('x');
-    expect({ control, money, wallet, transaction, ledgerEntry }).toEqual({
+    expect({ control, money, wallet, transaction, ledgerEntry, outboxMessage }).toEqual({
       control: true,
       money: false,
       wallet: false,
       transaction: false,
       ledgerEntry: false,
+      outboxMessage: false,
     });
   });
 });

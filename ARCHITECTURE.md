@@ -24,7 +24,7 @@ flowchart LR
 
 | Layer | Contains | May import |
 | --- | --- | --- |
-| Domain | `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry`, integration events, failure codes, domain errors | Nothing outside the domain, except `decimal.js` inside `Money` |
+| Domain | `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry`, `OutboxMessage`, integration events, failure codes, domain errors | Nothing outside the domain, except `decimal.js` inside `Money` |
 | Application | Use cases and ports (repositories, clock, id generator, event publisher, provider identity) | Domain |
 | Infrastructure | MikroORM records and mappers, migrations, SQS and SNS adapters, HTTP controllers, workers, logging, metrics | Application and domain |
 
@@ -112,6 +112,7 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 - **Options.** (a) Polling with `FOR UPDATE SKIP LOCKED`, publishing while the rows are locked. (b) Lease columns with expiry. (c) (a) woken by `LISTEN/NOTIFY`.
 - **Decision.** (a), batches of 10 (the `PublishBatch` limit), short client timeout.
 - **Consequences.** A publisher that dies releases its locks with its connection and another instance picks the rows up: at-least-once, with no lease to tune. The transaction stays open during one bounded network call. Failed entries get `attempts + 1` and an exponential `next_attempt_at`; events are never dropped. Two publishers can invert the order of two batches of the same wallet, so consumers order by `walletVersion` and deduplicate by `eventId` (L-14).
+- **Implementation (S10).** `OutboxPublisher` runs in every instance: it scans due rows in `(next_attempt_at, id)` order with MikroORM's `PESSIMISTIC_PARTIAL_WRITE` (`FOR UPDATE SKIP LOCKED`), publishes them with one `PublishBatch` bounded by `OUTBOX_PUBLISH_TIMEOUT_MS` (3 s), and records the outcome on the statement's `OutboxMessage` (docs/tasks/S10.md, Q1): `markPublished`, or `scheduleRetry` with `min(OUTBOX_RETRY_MAX_DELAY_MS, OUTBOX_RETRY_BASE_DELAY_MS × 2^(attempts-1))` and no last attempt. An entry the broker did not list as successful is retried; a call that fails or times out retries the whole batch. On `SIGTERM` the batch in flight commits or rolls back before the ORM closes. A row whose publish keeps failing stays at the head with growing delay; it never blocks other rows, because the scan only takes due rows.
 
 ### ADR-05 — Retry policies (accepted)
 

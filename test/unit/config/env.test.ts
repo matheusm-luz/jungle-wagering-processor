@@ -30,6 +30,12 @@ describe('loadEnv', () => {
       PENDING_REFERENCE_MAX_ATTEMPTS: 10,
       PENDING_REFERENCE_POLL_INTERVAL_MS: 500,
       PENDING_REFERENCE_BATCH_SIZE: 10,
+      WAGER_EVENTS_TOPIC_ARN: 'arn:aws:sns:us-east-1:000000000000:wager-events.fifo',
+      OUTBOX_POLL_INTERVAL_MS: 500,
+      OUTBOX_BATCH_SIZE: 10,
+      OUTBOX_PUBLISH_TIMEOUT_MS: 3000,
+      OUTBOX_RETRY_BASE_DELAY_MS: 1000,
+      OUTBOX_RETRY_MAX_DELAY_MS: 60_000,
     });
   });
 
@@ -91,6 +97,33 @@ describe('loadEnv', () => {
     expect(load).toThrow(/DATABASE_URL/);
     expect(load).toThrow(/LOG_LEVEL/);
     expect(load).toThrow(/PORT/);
+  });
+
+  test('reads the outbox publisher settings and refuses a batch above the PublishBatch limit (ADR-04)', () => {
+    const env = loadEnv({
+      DATABASE_URL,
+      WAGER_EVENTS_TOPIC_ARN: 'arn:aws:sns:us-east-1:000000000000:other.fifo',
+      OUTBOX_POLL_INTERVAL_MS: '20',
+      OUTBOX_BATCH_SIZE: '3',
+      OUTBOX_PUBLISH_TIMEOUT_MS: '700',
+      OUTBOX_RETRY_BASE_DELAY_MS: '5',
+      OUTBOX_RETRY_MAX_DELAY_MS: '40',
+      OUTBOX_PUBLISHER_FAILPOINT: 'crash-after-publish',
+    });
+
+    expect(env).toMatchObject({
+      WAGER_EVENTS_TOPIC_ARN: 'arn:aws:sns:us-east-1:000000000000:other.fifo',
+      OUTBOX_POLL_INTERVAL_MS: 20,
+      OUTBOX_BATCH_SIZE: 3,
+      OUTBOX_PUBLISH_TIMEOUT_MS: 700,
+      OUTBOX_RETRY_BASE_DELAY_MS: 5,
+      OUTBOX_RETRY_MAX_DELAY_MS: 40,
+      OUTBOX_PUBLISHER_FAILPOINT: 'crash-after-publish',
+    });
+    expect(() => loadEnv({ DATABASE_URL, OUTBOX_BATCH_SIZE: '11' })).toThrow(/OUTBOX_BATCH_SIZE/);
+    expect(() => loadEnv({ DATABASE_URL, OUTBOX_PUBLISHER_FAILPOINT: 'other' })).toThrow(
+      /OUTBOX_PUBLISHER_FAILPOINT/,
+    );
   });
 
   test('never echoes a value in the error', () => {

@@ -14,6 +14,8 @@ const schema = z
     DATABASE_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(1).default(5000),
     /** ADR-01: a wallet lock waited for longer than this fails its transaction (55P03), a transient error. */
     DATABASE_LOCK_TIMEOUT_MS: z.coerce.number().int().min(1).default(5000),
+    /** Any statement running longer fails (57014), a transient error (S12). Above the lock timeout. */
+    DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(1).default(10_000),
     /**
      * A session idle inside a transaction for longer is ended by the server, with its locks. Bounds
      * what a client that vanished without closing its socket (host or network down) can hold: the
@@ -74,6 +76,7 @@ const schema = z
     atLeast('PENDING_REFERENCE_MAX_DELAY_MS', 'PENDING_REFERENCE_BASE_DELAY_MS');
     atLeast('OUTBOX_RETRY_MAX_DELAY_MS', 'OUTBOX_RETRY_BASE_DELAY_MS');
     atLeast('DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS', 'OUTBOX_PUBLISH_TIMEOUT_MS', true);
+    atLeast('DATABASE_STATEMENT_TIMEOUT_MS', 'DATABASE_LOCK_TIMEOUT_MS', true);
   });
 
 export type Env = Readonly<z.infer<typeof schema>>;

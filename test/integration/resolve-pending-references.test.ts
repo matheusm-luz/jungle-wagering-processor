@@ -306,6 +306,83 @@ describe('ResolvePendingReferences — a retry that failed unexpectedly (S7 revi
   });
 });
 
+describe('ResolvePendingReferences — FAILED (S12, docs/tasks/S12.md Q2)', () => {
+  test('a non-transient failure counts an attempt and postpones the row by the maximum delay', async () => {
+    const wallet = await openWallet('100.00');
+    const { id } = await refundBeforeBet(wallet);
+    const now = new Date(Date.now() + 5);
+
+    const outcome = await resolver({ now: () => now }).postpone(
+      { id, walletId: wallet.id },
+      { countsAttempt: true },
+    );
+
+    expect(outcome).toBe('postponed');
+    expect(await row(id)).toMatchObject({
+      status: 'PENDING_REFERENCE',
+      reference_attempts: 1,
+      next_attempt_at: new Date(now.getTime() + ADR_05.maxDelayMs),
+    });
+    await exhaust(id, wallet.id);
+  });
+
+  test('the 10th attempt ending in a non-transient failure is FAILED with PROCESSING_FAILED, its event and no entry; the replay of its key is 422', async () => {
+    const wallet = await openWallet('100.00');
+    const { refund, id } = await refundBeforeBet(wallet);
+    await sql`update wager_transactions set reference_attempts = 9 where id = ${id}`;
+
+    const outcome = await resolver().postpone({ id, walletId: wallet.id }, { countsAttempt: true });
+
+    expect(outcome).toBe('FAILED');
+    expect(await row(id)).toMatchObject({
+      status: 'FAILED',
+      failure_code: 'PROCESSING_FAILED',
+      // FAILED keeps the balance observed when it started waiting (schema trigger).
+      observed_balance: '100.00',
+      reference_attempts: 10,
+      next_attempt_at: null,
+      processed: false,
+    });
+    expect(await walletRow(wallet.id)).toEqual({ balance: '100.00', version: 1 });
+    expect(await sql`select 1 from wallet_ledger_entries where transaction_id = ${id}`).toEqual([]);
+    expect(await eventsOf(id)).toEqual([
+      { event_type: 'WagerTransactionPendingReference', correlation_id: 'refund-correlation' },
+      { event_type: 'WagerTransactionRejected', correlation_id: 'refund-correlation' },
+    ]);
+    const [event] = await sql`
+      select payload->'data'->>'failureCode' as code from outbox_messages
+       where event_type = 'WagerTransactionRejected' and payload->'data'->>'transactionId' = ${id}`;
+    expect(event.code).toBe('PROCESSING_FAILED');
+    // ARCHITECTURE §6 (docs/tasks/S12.md Q3): terminal, so the replay answers like a rejection.
+    expect(await submit(refund)).toEqual({
+      status: 422,
+      result: {
+        transactionId: id,
+        status: 'FAILED',
+        failureCode: 'PROCESSING_FAILED',
+        balance: { amount: '100.00', currency: 'BRL' },
+        idempotentReplay: true,
+      },
+    });
+    const query = await fetch(`${app.url}/wagering/transactions/${id}`);
+    expect(query.status).toBe(200);
+    expect(await query.json()).toMatchObject({
+      status: 'FAILED',
+      failureCode: 'PROCESSING_FAILED',
+    });
+  });
+
+  test('a transient failure never counts: the 10th postpone without counting leaves the row waiting', async () => {
+    const wallet = await openWallet('100.00');
+    const { id } = await refundBeforeBet(wallet);
+    await sql`update wager_transactions set reference_attempts = 9 where id = ${id}`;
+
+    expect(await resolver().postpone({ id, walletId: wallet.id })).toBe('postponed');
+    expect(await row(id)).toMatchObject({ status: 'PENDING_REFERENCE', reference_attempts: 9 });
+    await exhaust(id, wallet.id);
+  });
+});
+
 describe('ResolvePendingReferences — two workers (ADR-05)', () => {
   test('two resolvers retry the same 20 due rows in parallel: each REFUND is credited once and each row moves once', async () => {
     const rows = await Promise.all(

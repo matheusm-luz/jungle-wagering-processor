@@ -21,6 +21,7 @@ import { Wallet } from '../../src/domain/wallet';
 import { Metrics } from '../../src/infrastructure/metrics/metrics';
 import { buildOrmConfig } from '../../src/infrastructure/persistence/mikro-orm.config';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
+import { isTransientDatabaseError } from '../../src/infrastructure/persistence/transient-errors';
 import { migratedDatabase, silentLogger, testEnv } from '../support/database';
 import { expectLedgerInvariant } from '../support/ledger-invariant';
 import { startOrm } from '../support/orm';
@@ -661,6 +662,29 @@ describe('lock timeout (ADR-01, docs/tasks/S9.md Q2)', () => {
     } finally {
       release();
       await holder;
+      await shortOrm.close();
+    }
+  });
+});
+
+describe('statement timeout (S12)', () => {
+  test('a statement that runs past the statement timeout fails with 57014, which is transient', async () => {
+    const shortOrm = await MikroORM.init(
+      buildOrmConfig({ ...testEnv, DATABASE_STATEMENT_TIMEOUT_MS: 200 }, silentLogger),
+    );
+    try {
+      const started = performance.now();
+      const error = await shortOrm.em
+        .getConnection()
+        .execute('select pg_sleep(2)')
+        .then(
+          () => undefined,
+          (caught: unknown) => caught,
+        );
+      expect((error as { code?: string } | undefined)?.code).toBe('57014');
+      expect(isTransientDatabaseError(error)).toBe(true);
+      expect(performance.now() - started).toBeLessThan(1500);
+    } finally {
       await shortOrm.close();
     }
   });

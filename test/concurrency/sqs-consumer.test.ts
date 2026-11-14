@@ -145,6 +145,8 @@ describe('SQS consumer across processes', () => {
         SQS_SHUTDOWN_GRACE_MS: '10000',
         SQS_VISIBILITY_TIMEOUT_S: '60',
         DATABASE_LOCK_TIMEOUT_MS: '20000',
+        // The statement timeout also bounds a lock wait, so it must stay above it (S12).
+        DATABASE_STATEMENT_TIMEOUT_MS: '30000',
       }),
     );
     const release = await holdWallet(target.id);

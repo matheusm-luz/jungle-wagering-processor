@@ -19,8 +19,9 @@ interface OutboxBacklog {
  * policy's moves, which no counter of a running instance can. Every instance reads the same
  * database and queue, so a scraper takes their maximum, not their sum. A read that fails reports
  * NaN, never a stale value.
- * shortcut: a scrape waits as long as PostgreSQL or SQS take to answer; the scraper's own timeout
- * bounds it (S12 may bound it here, as the readiness probes are).
+ * The PostgreSQL read is bounded by `DATABASE_STATEMENT_TIMEOUT_MS`.
+ * shortcut: the SQS read waits as long as SQS takes to answer; the scraper's own timeout bounds it.
+ * Bound it here, as the readiness probes are, if a slow SQS ever stalls scrapes.
  */
 @Injectable()
 export class BacklogGauges {

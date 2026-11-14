@@ -10,6 +10,7 @@ import {
   WagerTransactionStatus,
 } from '../../domain/wager-transaction';
 import { addLogContext, currentLogContext } from '../logging/log-context';
+import { Metrics } from '../metrics/metrics';
 import { IdempotencyKeyRequiredError } from './request-validation.error';
 import {
   idempotencyKeySchema,
@@ -44,6 +45,7 @@ export class WageringController {
   constructor(
     private readonly processWagerTransaction: ProcessWagerTransaction,
     private readonly getTransaction: GetTransaction,
+    private readonly metrics: Metrics,
   ) {}
 
   @Post('wagering/transactions')
@@ -59,14 +61,22 @@ export class WageringController {
     const request = parse(wagerSchema, body);
     addLogContext({ walletId: request.walletId, providerId: request.providerId });
 
-    const { transaction, idempotentReplay } = await this.processWagerTransaction.execute({
-      ...request,
-      idempotencyKey: key,
-      money: money('money', request.money),
-      // Set by the correlation middleware for every request.
-      correlationId: currentLogContext().correlationId ?? Bun.randomUUIDv7(),
-    });
+    const timer = this.metrics.processing.startTimer({ channel: 'http' });
+    const { transaction, idempotentReplay } = await this.processWagerTransaction
+      .execute({
+        ...request,
+        idempotencyKey: key,
+        money: money('money', request.money),
+        // Set by the correlation middleware for every request.
+        correlationId: currentLogContext().correlationId ?? Bun.randomUUIDv7(),
+      })
+      .finally(timer);
     addLogContext({ transactionId: transaction.id });
+    if (idempotentReplay) {
+      this.metrics.duplicates.inc({ channel: 'http' });
+    } else {
+      this.metrics.transactions.inc({ channel: 'http', status: transaction.status });
+    }
 
     const status = HTTP_STATUS[transaction.status];
     const { observedBalance, failureCode } = transaction;

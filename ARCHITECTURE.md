@@ -177,6 +177,12 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 - **Decision.** MikroORM 7, the statement's preferred option: explicit Unit of Work, `em.transactional()` and `LockMode`. Migrations are hand-written SQL classes with `up` and `down`, registered in a static list and run through the Migrator API.
 - **Consequences.** The schema contains partial indexes, `CHECK` constraints and triggers that a generator would not produce, so hand-written SQL is the honest representation. Running migrations programmatically avoids the MikroORM CLI, whose TypeScript loaders do not include Bun. Each use case execution, queue message and worker iteration runs on its own forked `EntityManager`, so no identity map is shared across concurrent work.
 
+### ADR-14 — Metrics (accepted, S11)
+
+- **Decision.** `GET /metrics` serves the Prometheus text format through `prom-client`, from a registry owned by each instance (never the global one). Counters and histograms are moved at the edges that already see the outcome (controller, consumer, worker, publisher, unit of work), not by an application port. The backlog is read at scrape time: `outbox_lag_seconds` (`now() - min(occurred_at)` over unpublished rows), `outbox_pending_messages`, `outbox_max_attempts` (ADR-04, m3) and `sqs_dlq_messages` (`ApproximateNumberOfMessages` plus not visible, so the redrive policy's moves count). Lock conflicts are the 55P03 of `lock_timeout` seen by the unit of work, with `wallet_lock_wait_seconds` showing contention before it times out. Details in docs/tasks/S11.md.
+- **Families.** `wager_transactions_total{channel,status}` (each status reached; a replay is not a transaction), `wager_transaction_processing_seconds{channel}`, `wager_duplicates_total{channel}`, `retries_total{source}` (`sqs`, `outbox`, `pending_reference`), `sqs_dead_lettered_total`, `sqs_unknown_wallet_messages_total`, `lock_conflicts_total`, `wallet_lock_wait_seconds`, `wallet_reconciliation_divergences_total`, and the four gauges above.
+- **Consequences.** Counters are per process and restart at zero; a scraper sums them across instances, and takes the maximum of the gauges, which every instance reads from the same database and queue. A scrape costs one query and two SQS calls at most; a gauge whose read fails reports `NaN`, never a stale value. Rejected: hand-written text format (a histogram and escaping to maintain), gauges measured only by the publisher and the consumer (blind to a stopped publisher and to redrives), timeouts only for lock conflicts.
+
 ## 5. Transaction state machine
 
 | From | To | When |
@@ -264,3 +270,4 @@ The remaining proposed interpretations are listed in [docs/spec/REQUIREMENTS.md]
 - A consumer that dies (or is killed) while its long poll is open can leave a message the broker handed to that poll invisible for one visibility timeout (30 s) before another instance gets it. Delayed, never lost; a graceful `SIGTERM` avoids it.
 - `ApproximateReceiveCount` is the broker's: a message whose processing outlives its visibility timeout is received again and counts a receive even though the first attempt is still running. The inbox keeps it to one effect; it can reach the DLQ sooner than five real failures.
 - The emulator image is frozen and differs from AWS in timing details.
+- Metrics are per process and lost on restart (ADR-14); a scrape that finds PostgreSQL or SQS slow waits for them, bounded only by the scraper's timeout. `/metrics` is open like the health checks: it carries counts and durations, no amounts.

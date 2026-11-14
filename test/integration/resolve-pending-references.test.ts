@@ -3,6 +3,7 @@ import type { MikroORM } from '@mikro-orm/postgresql';
 import type { SQL } from 'bun';
 import type { Clock } from '../../src/application/ports';
 import { ResolvePendingReferences } from '../../src/application/resolve-pending-references';
+import { Metrics } from '../../src/infrastructure/metrics/metrics';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { startApp, type TestApp } from '../support/app';
 import { migratedDatabase } from '../support/database';
@@ -33,7 +34,7 @@ const ADR_05 = { baseDelayMs: 1000, maxDelayMs: 60_000, maxAttempts: 10 };
 
 function resolver(clock: Clock = { now: () => new Date() }) {
   return new ResolvePendingReferences(
-    new MikroOrmUnitOfWork(orm, { newId }),
+    new MikroOrmUnitOfWork(orm, { newId }, new Metrics()),
     clock,
     { newId },
     ADR_05,

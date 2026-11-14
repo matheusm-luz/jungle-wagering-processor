@@ -6,6 +6,7 @@ import type { UnitOfWork } from '../../src/application/ports';
 import { ProcessWagerTransaction } from '../../src/application/process-wager-transaction';
 import { Money } from '../../src/domain/money';
 import { WagerTransactionKind, WagerTransactionStatus } from '../../src/domain/wager-transaction';
+import { Metrics } from '../../src/infrastructure/metrics/metrics';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { migratedDatabase } from '../support/database';
 import { expectLedgerInvariant } from '../support/ledger-invariant';
@@ -31,7 +32,7 @@ describe('ProcessWagerTransaction', () => {
     const arrival = new Date('2026-11-13T10:00:00.000Z');
     const afterLock = new Date('2026-11-13T10:00:05.000Z');
     let now = arrival;
-    const real = new MikroOrmUnitOfWork(orm, { newId });
+    const real = new MikroOrmUnitOfWork(orm, { newId }, new Metrics());
     // Time passes while the request waits for the lock.
     const slowLock: UnitOfWork = {
       run: (work) =>
@@ -83,7 +84,7 @@ describe('ProcessWagerTransaction', () => {
   });
 
   test('a failure after the outbox write leaves no transaction, no entry, no event and the balance unchanged', async () => {
-    const real = new MikroOrmUnitOfWork(orm, { newId });
+    const real = new MikroOrmUnitOfWork(orm, { newId }, new Metrics());
     // The real transaction, with every write sent, then a crash before COMMIT.
     const failingAfterOutbox: UnitOfWork = {
       run: (work) =>
@@ -173,7 +174,7 @@ describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () 
 
   test('a message is applied once with its inbox row; the same message again is a duplicate with no second effect', async () => {
     const useCase = new ProcessWagerTransaction(
-      new MikroOrmUnitOfWork(orm, { newId }),
+      new MikroOrmUnitOfWork(orm, { newId }, new Metrics()),
       { now: () => new Date() },
       { newId },
     );
@@ -196,7 +197,7 @@ describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () 
 
   test('the same message id with another payload is an InboxMessageConflictError', async () => {
     const useCase = new ProcessWagerTransaction(
-      new MikroOrmUnitOfWork(orm, { newId }),
+      new MikroOrmUnitOfWork(orm, { newId }, new Metrics()),
       { now: () => new Date() },
       { newId },
     );
@@ -217,7 +218,7 @@ describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () 
 
   test('the same message id with another idempotency key is an InboxMessageConflictError (PR #9 review)', async () => {
     const useCase = new ProcessWagerTransaction(
-      new MikroOrmUnitOfWork(orm, { newId }),
+      new MikroOrmUnitOfWork(orm, { newId }, new Metrics()),
       { now: () => new Date() },
       { newId },
     );
@@ -238,7 +239,7 @@ describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () 
 
   test('a message for an unknown wallet commits only its inbox row (L-08)', async () => {
     const useCase = new ProcessWagerTransaction(
-      new MikroOrmUnitOfWork(orm, { newId }),
+      new MikroOrmUnitOfWork(orm, { newId }, new Metrics()),
       { now: () => new Date() },
       { newId },
     );
@@ -256,7 +257,7 @@ describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () 
   });
 
   test('a failure after the inbox insert rolls the inbox row back with the effects', async () => {
-    const real = new MikroOrmUnitOfWork(orm, { newId });
+    const real = new MikroOrmUnitOfWork(orm, { newId }, new Metrics());
     const failingAfterOutbox: UnitOfWork = {
       run: (work) =>
         real.run((scope) =>

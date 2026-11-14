@@ -6,6 +6,7 @@ import type { Env } from '../../src/config/env';
 import { JsonLogger } from '../../src/infrastructure/logging/json-logger';
 import { OutboxPublisher } from '../../src/infrastructure/messaging/outbox.publisher';
 import { createSnsClient } from '../../src/infrastructure/messaging/sns.provider';
+import { Metrics } from '../../src/infrastructure/metrics/metrics';
 import { startApp, type TestApp } from '../support/app';
 import { inRolledBackTransaction, migratedDatabase, testEnv } from '../support/database';
 import { expectLedgerInvariant } from '../support/ledger-invariant';
@@ -51,7 +52,7 @@ function publisher(overrides: Partial<Env> = {}, clock: Clock = realClock) {
     write: (line) => lines.push(JSON.parse(line) as Record<string, unknown>),
   });
   const env: Env = { ...testEnv, ...topic.env, ...overrides };
-  return { publisher: new OutboxPublisher(orm, sns, env, clock, logger), lines };
+  return { publisher: new OutboxPublisher(orm, sns, env, clock, logger, new Metrics()), lines };
 }
 
 interface Wallet {
@@ -259,6 +260,7 @@ describe('outbox publisher', () => {
         env,
         clock,
         new JsonLogger({ level: 'silent', write: () => {} }),
+        new Metrics(),
       );
       const started = performance.now();
       expect(await stuck.publishDue()).toEqual({ published: 0, failed: 4 });
@@ -333,7 +335,9 @@ describe('outbox publisher', () => {
     });
     try {
       const env: Env = { ...testEnv, ...topic.env };
-      expect(await new OutboxPublisher(orm, forged, env, clock, logger).publishDue()).toEqual({
+      expect(
+        await new OutboxPublisher(orm, forged, env, clock, logger, new Metrics()).publishDue(),
+      ).toEqual({
         published: 2,
         failed: 2,
       });

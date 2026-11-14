@@ -415,7 +415,7 @@ describe('POST /wallets/:walletId/reconciliation (R-49)', () => {
   test('a balance tampered through SQL is reported, logged and counted, and not fixed', async () => {
     const wallet = await openWallet('100.00');
     await submit(wager(wallet, 'BET', '25.00'));
-    const before = app.metricValue('wallet_reconciliation_divergences_total');
+    const before = await app.metricValue('wallet_reconciliation_divergences_total');
     await sql`update wallets set balance = 50.00 where id = ${wallet.id}`;
     try {
       const response = await reconcile(wallet.id);
@@ -429,7 +429,7 @@ describe('POST /wallets/:walletId/reconciliation (R-49)', () => {
         consistent: false,
         checkedEntries: 2,
       });
-      expect(app.metricValue('wallet_reconciliation_divergences_total')).toBe(before + 1);
+      expect(await app.metricValue('wallet_reconciliation_divergences_total')).toBe(before + 1);
       const logged = app
         .logs()
         .filter((line) => line.message === 'wallet reconciliation divergence');

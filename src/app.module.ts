@@ -17,6 +17,7 @@ import { ENV } from './config/env.token';
 import { ReadinessService } from './infrastructure/health/readiness.service';
 import { ErrorFilter } from './infrastructure/http/error.filter';
 import { HealthController } from './infrastructure/http/health.controller';
+import { MetricsController } from './infrastructure/http/metrics.controller';
 import { WageringController } from './infrastructure/http/wagering.controller';
 import { WalletsController } from './infrastructure/http/wallets.controller';
 import { JsonLogger } from './infrastructure/logging/json-logger';
@@ -24,6 +25,7 @@ import { OutboxPublisher } from './infrastructure/messaging/outbox.publisher';
 import { createSnsClient, SNS_CLIENT } from './infrastructure/messaging/sns.provider';
 import { createSqsClient, SQS_CLIENT } from './infrastructure/messaging/sqs.provider';
 import { WagerTransactionConsumer } from './infrastructure/messaging/wager-transaction.consumer';
+import { BacklogGauges } from './infrastructure/metrics/backlog.gauges';
 import { Metrics } from './infrastructure/metrics/metrics';
 import { buildOrmConfig } from './infrastructure/persistence/mikro-orm.config';
 import { MikroOrmUnitOfWork } from './infrastructure/persistence/mikro-orm-unit-of-work';
@@ -51,7 +53,7 @@ export class AppModule implements OnApplicationShutdown {
           registerRequestContext: false,
         }),
       ],
-      controllers: [HealthController, WalletsController, WageringController],
+      controllers: [HealthController, MetricsController, WalletsController, WageringController],
       providers: [
         { provide: ENV, useValue: env },
         { provide: JsonLogger, useValue: logger },
@@ -110,6 +112,7 @@ export class AppModule implements OnApplicationShutdown {
           inject: [WALLET_QUERIES],
         },
         Metrics,
+        BacklogGauges,
       ],
     };
   }

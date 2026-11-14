@@ -3,6 +3,7 @@ import type { DuePending } from '../../../src/application/ports';
 import type { ResolvePendingReferences } from '../../../src/application/resolve-pending-references';
 import { loadEnv } from '../../../src/config/env';
 import { JsonLogger } from '../../../src/infrastructure/logging/json-logger';
+import { Metrics } from '../../../src/infrastructure/metrics/metrics';
 import { PendingReferenceWorker } from '../../../src/infrastructure/workers/pending-reference.worker';
 
 const env = loadEnv({
@@ -47,7 +48,7 @@ describe('PendingReferenceWorker (S7 review)', () => {
   test('a full batch of rows that always fail is postponed and does not make the worker poll again at once (M1)', async () => {
     const { resolver, calls } = failingResolver();
     const { logger, lines } = capturingLogger();
-    const worker = new PendingReferenceWorker(resolver, env, logger);
+    const worker = new PendingReferenceWorker(resolver, env, logger, new Metrics());
 
     worker.onApplicationBootstrap();
     await Bun.sleep(200);
@@ -84,7 +85,7 @@ describe('PendingReferenceWorker (S7 review)', () => {
         lines.push(record);
       },
     });
-    const worker = new PendingReferenceWorker(resolver, env, logger);
+    const worker = new PendingReferenceWorker(resolver, env, logger, new Metrics());
 
     worker.onApplicationBootstrap();
     await Bun.sleep(150);

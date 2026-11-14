@@ -13,6 +13,7 @@ import type { Env } from '../../config/env';
 import { ENV } from '../../config/env.token';
 import type { OutboxMessage } from '../../domain/outbox-message';
 import { JsonLogger } from '../logging/json-logger';
+import { Metrics } from '../metrics/metrics';
 import { toOutboxMessage } from '../persistence/mappers';
 import { OutboxMessageRecord } from '../persistence/records';
 import { SNS_CLIENT } from './sns.provider';
@@ -42,6 +43,7 @@ export class OutboxPublisher implements OnApplicationBootstrap, BeforeApplicatio
     @Inject(ENV) private readonly env: Env,
     @Inject(CLOCK) private readonly clock: Clock,
     private readonly logger: JsonLogger,
+    private readonly metrics: Metrics,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -58,7 +60,7 @@ export class OutboxPublisher implements OnApplicationBootstrap, BeforeApplicatio
 
   /** One batch. Nothing is due, or every row is locked by another publisher: `{ 0, 0 }`. */
   async publishDue(): Promise<PublishOutcome> {
-    return await this.orm.em.fork().transactional(async (em) => {
+    const outcome = await this.orm.em.fork().transactional(async (em) => {
       const now = this.clock.now();
       const rows = await em.find(
         OutboxMessageRecord,
@@ -106,6 +108,9 @@ export class OutboxPublisher implements OnApplicationBootstrap, BeforeApplicatio
       });
       return { published: published.length, failed: failed.length };
     });
+    // After the commit: a rolled-back batch rescheduled nothing.
+    if (outcome.failed > 0) this.metrics.retries.inc({ source: 'outbox' }, outcome.failed);
+    return outcome;
   }
 
   /** The ids the broker accepted. A call that fails or times out accepted none. */

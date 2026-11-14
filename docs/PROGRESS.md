@@ -16,10 +16,10 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S10 is done (13 Nov), committed on the branch `feat/s10-outbox-publisher`. Next is S11, observability and CI.
+S11 is done (14 Nov), committed on the branch `feat/s11-observability`. Next is S12, failure modes.
 
-1. S10 reaches `main` through a pull request, as S1 to S9 did. Then `/sdd-implement S11` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
-2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations, then the CI workflow.
+1. S11 reaches `main` through a pull request, as S1 to S10 did; that push is also the first real run of the CI workflow. Then `/sdd-implement S12` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
+2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations.
 
 ## Phases
 
@@ -29,7 +29,7 @@ S10 is done (13 Nov), committed on the branch `feat/s10-outbox-publisher`. Next 
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0 to S10 done; next is S11 |
+| 4 | Implementation, slice by slice | S0 to S11 done; next is S12 |
 
 ## Decisions confirmed by Matheus (12 Nov, unless dated)
 
@@ -206,6 +206,14 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **For S12.** `idle_in_transaction_session_timeout` ends a session from the server side; the test shows the application survives it (the error reaches the transaction, nothing crashes). S12 should map that error (25P03 / connection terminated) like the other transient database errors.
 - **Limit.** Across processes, a double publication is hidden by the broker's deduplication, so R-69's cross-process test proves no loss and no duplicate delivery; the lock is proven in process (mutation runs in docs/tasks/S10.md). A partial `PublishBatch` failure, which LocalStack cannot produce, is tested with a forged HTTP answer of the broker (real database and SDK): the one exception to invariant 8, recorded in `CLAUDE.md` (PR review).
 
+## Findings from S11 that later slices depend on
+
+- **Decisions of 14 Nov (docs/tasks/S11.md).** Q1: `prom-client` 15.1.3, one registry per instance. Q2: outbox lag, pending count, highest attempts and DLQ depth read at scrape time. Q3: 55P03 counter plus a wallet-lock wait histogram. Q4: outcomes counted at the edges, no application port. Recorded as ADR-14.
+- **Metrics.** `src/infrastructure/metrics/metrics.ts` (typed families), `backlog.gauges.ts` (scrape-time gauges), `src/infrastructure/http/metrics.controller.ts`. The S8 and S9 counters were renamed into the families of ADR-14 (`sqs_duplicate_messages` → `wager_duplicates_total{channel="sqs"}`, `sqs_message_retries` → `retries_total{source="sqs"}`, `sqs_messages_dead_lettered` → `sqs_dead_lettered_total`, `sqs_unknown_wallet_messages` → `…_total`). `TestApp.metricValue(name, labels)` is now async and scrapes `/metrics`.
+- **For S12.** A lock timeout is counted in `lock_conflicts_total` wherever it happens (HTTP, SQS, worker), including a foreign-key wait on a ledger account (the log audit triggers one). The gauges are not bounded by a timeout: with PostgreSQL or SQS hanging a scrape waits; with them down it answers `NaN` for the affected gauges and still serves the counters. S12's 503 mapping of 55P03 does not change the counting, which happens in the unit of work.
+- **Log audit.** `test/integration/log-audit.test.ts` found no leak: the HTTP 500 line of a driver error carries MikroORM 7's message, which does not include the SQL or its parameters. A new log field must keep amounts out; the audit fails otherwise (mutation checked).
+- **CI.** `.github/workflows/ci.yml` runs typecheck, lint, unit, integration and concurrency on push to `main` and on pull requests, with Bun 1.4.4 and the Compose stack. Only its YAML was checked locally; it has not run on GitHub yet.
+
 ## Slices
 
 Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
@@ -225,7 +233,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | S8 | Read side | 13 Nov | 1.0 | done 13 Nov |
 | S9 | SQS consumer | 14 Nov | 2.5 | done 13 Nov |
 | S10 | Outbox publisher | 14 Nov | 2.0 | done 13 Nov |
-| S11 | Observability and CI | 14 Nov | 1.0 | todo |
+| S11 | Observability and CI | 14 Nov | 1.0 | done 14 Nov |
 | S12 | Failure modes | 14 Nov | 1.0 | todo |
 | S13 | Documentation and delivery | 14 Nov | 3.0 | todo |
 | — | Double-entry, folded into S2, S3, S4, S6, S8 | 13 Nov | +1.5 | done 13 Nov |

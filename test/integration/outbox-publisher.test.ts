@@ -282,6 +282,84 @@ describe('outbox publisher', () => {
     );
   });
 
+  // The one forged broker answer of the suites (CLAUDE.md, invariant 8): LocalStack 4.12 never
+  // answers a PublishBatch in part (an empty attribute or an oversized entry fails the whole call),
+  // so this is the only way to prove that a refused entry is not marked published. The database and
+  // the SDK are real; only the HTTP answer is written here, in the documented PublishBatch shape.
+  test('a batch the broker accepts in part: only the accepted entries are marked published, the refused ones are rescheduled (S10 PR review)', async () => {
+    const { wallet, rows } = await walletWithEvents();
+    const accepted = new Set(rows.slice(0, 2).map((row) => row.id));
+    const isRefused = (id: string) => !accepted.has(id);
+    const partial = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: async (request) => {
+        const form = new URLSearchParams(await request.text());
+        const ids = [...form.entries()]
+          .filter(([key]) => /^PublishBatchRequestEntries\.member\.\d+\.Id$/.test(key))
+          .map(([, id]) => id);
+        const successful = ids
+          .filter((id) => accepted.has(id))
+          .map(
+            (id) =>
+              `<member><Id>${id}</Id><MessageId>m-${id}</MessageId><SequenceNumber>1</SequenceNumber></member>`,
+          );
+        const failed = ids
+          .filter(isRefused)
+          .map(
+            (id) =>
+              `<member><Id>${id}</Id><Code>InternalError</Code><Message>refused</Message><SenderFault>false</SenderFault></member>`,
+          );
+        const body = `<PublishBatchResponse xmlns="http://sns.amazonaws.com/doc/2010-03-31/">
+          <PublishBatchResult>
+            <Successful>${successful.join('')}</Successful>
+            <Failed>${failed.join('')}</Failed>
+          </PublishBatchResult>
+          <ResponseMetadata><RequestId>forged</RequestId></ResponseMetadata>
+        </PublishBatchResponse>`;
+        return new Response(body, { headers: { 'content-type': 'text/xml' } });
+      },
+    });
+    const forged = createSnsClient({
+      ...testEnv,
+      AWS_ENDPOINT_URL: `http://127.0.0.1:${partial.port}`,
+    });
+    let now = new Date();
+    const clock: Clock = { now: () => now };
+    const lines: Record<string, unknown>[] = [];
+    const logger = new JsonLogger({
+      level: 'debug',
+      write: (line) => lines.push(JSON.parse(line) as Record<string, unknown>),
+    });
+    try {
+      const env: Env = { ...testEnv, ...topic.env };
+      expect(await new OutboxPublisher(orm, forged, env, clock, logger).publishDue()).toEqual({
+        published: 2,
+        failed: 2,
+      });
+    } finally {
+      forged.destroy();
+      partial.stop(true);
+    }
+
+    const after = await rowsOf(wallet.id);
+    expect(after.map((row) => [row.id, row.attempts, row.published_at !== null])).toEqual(
+      rows.map((row) => [row.id, accepted.has(row.id) ? 0 : 1, accepted.has(row.id)]),
+    );
+    const refusedIds = rows
+      .map((row) => row.id)
+      .filter(isRefused)
+      .sort();
+    const logged = lines.filter((line) => line.message === 'outbox event not published');
+    expect(logged.map((line) => String(line.eventId)).sort()).toEqual(refusedIds);
+
+    // The refused entries go out on their next attempt, to the real topic.
+    now = after.find((row) => isRefused(row.id))?.next_attempt_at as Date;
+    expect(await publisher({}, clock).publisher.publishDue()).toEqual({ published: 2, failed: 0 });
+    const received = await topic.collect((all) => all.length >= 2);
+    expect(eventIds(received).sort()).toEqual(refusedIds);
+  });
+
   test('a duplicated publication carries the same eventId: the subscriber receives one copy (statement §11)', async () => {
     const { rows } = await walletWithEvents();
     const ids = rows.map((row) => row.id);

@@ -70,7 +70,7 @@ Treat each one as a test that must exist. Breaking any of the first eight disqua
 5. Uniqueness, immutability and non-negativity are enforced in the schema (constraints, indexes, triggers), not only in code.
 6. Wallet, ledger, transaction, inbox and outbox change in the same SQL transaction. No event is published before commit. SQS ack happens only after commit.
 7. The ledger is append-only. Final invariant of every test: `wallet.balance == balance rebuilt from the ledger`.
-8. Integration and concurrency tests use real PostgreSQL and SQS containers, never mocks of them.
+8. Integration and concurrency tests use real PostgreSQL and SQS containers, never mocks of them. One documented exception: a broker answer the emulator cannot produce (a `PublishBatch` accepted in part, `test/integration/outbox-publisher.test.ts`) is forged at the HTTP level, with the real database and SDK.
 9. The domain layer imports nothing from the ORM or from NestJS.
 
 ## Conventions

@@ -14,6 +14,15 @@ export interface IdGenerator {
   newId(): string;
 }
 
+/**
+ * ADR-08: the provider the caller is authenticated as. An implementation reads the identity the
+ * `AuthGuard` verified for the current request; the one bound today accepts every provider.
+ */
+export interface ProviderIdentityPort {
+  /** Throws `ProviderForbiddenError` when the caller may not act for `providerId`. */
+  assertMayActFor(providerId: string): void;
+}
+
 /** The two identities of a transaction (ADR-03, L-04); each is unique on its own. */
 export interface TransactionIdentity {
   idempotencyKey: string;

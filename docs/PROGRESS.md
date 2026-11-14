@@ -16,10 +16,11 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S12 is done (14 Nov), committed on the branch `feat/s12-failure-modes`. Next is S13, documentation and delivery.
+S13 is done (14 Nov), committed on the branch `feat/s13-documentation`. Every slice is done.
 
-1. S12 reaches `main` through a pull request, as S1 to S11 did, with a green CI run. Then `/sdd-implement S13` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
-2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations.
+1. S13 reaches `main` through a pull request with a green CI run.
+2. Optional before the freeze: `/sdd-analyze` over the whole repository (PLAN.md, "How slices are executed").
+3. Submit from `main`.
 
 ## Phases
 
@@ -29,7 +30,7 @@ S12 is done (14 Nov), committed on the branch `feat/s12-failure-modes`. Next is 
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0 to S12 done; next is S13 |
+| 4 | Implementation, slice by slice | S0 to S13 done |
 
 ## Decisions confirmed by Matheus (12 Nov, unless dated)
 
@@ -226,6 +227,15 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **Independent review (14 Nov).** No blocker; M1, M2, m5, m6 and m7 fixed in a third commit (DNS failures are transient, a test for the 500 branch, a real race in the postpone test, `POST /wallets` resend documented, the shared attempt counter in L-07). M3 stays documented for S13; m4 not done. Details in docs/tasks/S12.md.
 - **Not built (offered).** Pausing the SQS consumer while PostgreSQL is unreachable, which would close the 75 s limit above.
 
+## Findings from S13
+
+- **Decisions of 14 Nov (docs/tasks/S13.md).** Q1: pt-BR translations made. Q2: L-04, L-05, L-11, L-12 and L-19 accepted as implemented and moved to ARCHITECTURE §7. Q3 (b): the auth extension point ADR-08 described did not exist in the code; now a global no-op `AuthGuard` and a `ProviderIdentityPort` the use case consults before `BEGIN` (403 `PROVIDER_FORBIDDEN`; the queue is not checked). Q4: load test built (R-76), OpenTelemetry dropped (R-78).
+- **Statement.** `README.md` moved to `docs/CHALLENGE.md` with `git mv`, same blob (`f4e8e66`).
+- **Load test (docs/LOAD-TEST.md).** No error, no lock timeout and the ledger invariant held in both scenarios; contention is reported as lock wait (on the hot-wallet scenario, 27 of 48 clients waiting on average). The outbox publisher is the first bottleneck: about 1 500 events/s for 2 600 produced, lag 36 s at the end of a 60 s run, drained 44 s later. Single runs vary by up to half on this machine. Recorded in ARCHITECTURE §9; several publisher loops per instance would raise it (not built).
+- **LocalStack 4.12 fails `start-message-move-task` on FIFO queues** (`AttributeError`). The README documents the AWS command and a manual resend for the emulator.
+- **The Compose port range.** With host port 3000 taken, the app lands on 3001 or 3002; the README finds it with `docker compose port app 3000`.
+- **Clean validation.** The committed file set copied to an empty directory, the stack and its volume removed first: `bun install`, `docker compose up -d --build --wait`, the README walkthrough, typecheck, lint, 148 unit, 212 integration, 18 concurrency and the load test, all green (docker images were cached).
+
 ## Slices
 
 Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
@@ -247,11 +257,11 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | S10 | Outbox publisher | 14 Nov | 2.0 | done 13 Nov |
 | S11 | Observability and CI | 14 Nov | 1.0 | done 14 Nov |
 | S12 | Failure modes | 14 Nov | 1.0 | done 14 Nov |
-| S13 | Documentation and delivery | 14 Nov | 3.0 | todo |
+| S13 | Documentation and delivery | 14 Nov | 3.0 | done 14 Nov |
 | — | Double-entry, folded into S2, S3, S4, S6, S8 | 13 Nov | +1.5 | done 13 Nov |
 
 - **Freeze:** end of the 8th hour on 14 Nov. Submit that night.
-- **Optional, only if ahead:** load test, Keycloak, OpenTelemetry.
+- **Optional:** load test done in S13 (Matheus's choice, Q4); Keycloak and OpenTelemetry not built.
 
 ## Environment
 

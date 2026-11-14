@@ -10,7 +10,7 @@ import {
   WalletNotFoundError,
 } from './errors';
 import { inboxHash, payloadHash } from './payload-hash';
-import type { Clock, IdGenerator, UnitOfWork } from './ports';
+import type { Clock, IdGenerator, ProviderIdentityPort, UnitOfWork } from './ports';
 import { settle, settlementEvents } from './settlement';
 
 export interface ProcessWagerTransactionCommand {
@@ -58,9 +58,13 @@ export class ProcessWagerTransaction {
     private readonly unitOfWork: UnitOfWork,
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
+    private readonly identity: ProviderIdentityPort,
   ) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<WagerTransactionResult> {
+    // Before BEGIN: a refused caller takes no lock and writes nothing. The queue is a trusted
+    // internal channel and is not checked (statement §2).
+    this.identity.assertMayActFor(command.providerId);
     // Without a message neither `duplicate` nor `walletNotFound` is produced: the latter throws.
     return (await this.process(command, undefined)) as WagerTransactionResult;
   }

@@ -2,19 +2,32 @@ import { SNSClient } from '@aws-sdk/client-sns';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { type DynamicModule, Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
-import { APP_FILTER } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { GetLedger } from './application/get-ledger';
 import { GetTransaction } from './application/get-transaction';
 import { GetWallet } from './application/get-wallet';
 import { OpenWallet } from './application/open-wallet';
-import type { Clock, IdGenerator, UnitOfWork, WalletQueries } from './application/ports';
+import type {
+  Clock,
+  IdGenerator,
+  ProviderIdentityPort,
+  UnitOfWork,
+  WalletQueries,
+} from './application/ports';
 import { ProcessWagerTransaction } from './application/process-wager-transaction';
 import { ReconcileWallet } from './application/reconcile-wallet';
 import { ResolvePendingReferences } from './application/resolve-pending-references';
-import { CLOCK, ID_GENERATOR, UNIT_OF_WORK, WALLET_QUERIES } from './application/tokens';
+import {
+  CLOCK,
+  ID_GENERATOR,
+  PROVIDER_IDENTITY,
+  UNIT_OF_WORK,
+  WALLET_QUERIES,
+} from './application/tokens';
 import type { Env } from './config/env';
 import { ENV } from './config/env.token';
 import { ReadinessService } from './infrastructure/health/readiness.service';
+import { ANY_PROVIDER, AuthGuard } from './infrastructure/http/auth';
 import { ErrorFilter } from './infrastructure/http/error.filter';
 import { HealthController } from './infrastructure/http/health.controller';
 import { MetricsController } from './infrastructure/http/metrics.controller';
@@ -61,6 +74,9 @@ export class AppModule implements OnApplicationShutdown {
         { provide: SNS_CLIENT, useFactory: () => createSnsClient(env) },
         ReadinessService,
         { provide: APP_FILTER, useClass: ErrorFilter },
+        // ADR-08: the extension point for an IdP. Both are no-ops until one exists.
+        { provide: APP_GUARD, useClass: AuthGuard },
+        { provide: PROVIDER_IDENTITY, useValue: ANY_PROVIDER },
         { provide: CLOCK, useValue: systemClock },
         { provide: ID_GENERATOR, useValue: uuidV7 },
         { provide: UNIT_OF_WORK, useClass: MikroOrmUnitOfWork },
@@ -74,9 +90,13 @@ export class AppModule implements OnApplicationShutdown {
         },
         {
           provide: ProcessWagerTransaction,
-          useFactory: (unitOfWork: UnitOfWork, clock: Clock, ids: IdGenerator) =>
-            new ProcessWagerTransaction(unitOfWork, clock, ids),
-          inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR],
+          useFactory: (
+            unitOfWork: UnitOfWork,
+            clock: Clock,
+            ids: IdGenerator,
+            identity: ProviderIdentityPort,
+          ) => new ProcessWagerTransaction(unitOfWork, clock, ids, identity),
+          inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR, PROVIDER_IDENTITY],
         },
         {
           provide: ResolvePendingReferences,

@@ -365,6 +365,15 @@ describe('SQS consumer: permanent failures go to the DLQ at once (R-55)', () => 
     expect(await walletState(target.id)).toEqual({ balance: '100.00', transactions: 0 });
   });
 
+  test('an OPENING message goes to the DLQ on its first receive: OPENING is internal (R-26)', async () => {
+    const target = await wallet();
+    const messageId = await send(bet(target, '30.00', { kind: 'OPENING' }));
+
+    const dead = await deadLettered(messageId);
+    expect(failureReason(dead)).toBe('RequestValidationError');
+    expect(await walletState(target.id)).toEqual({ balance: '100.00', transactions: 0 });
+  });
+
   test('the same messageId with another payload goes to the DLQ and leaves the first effect alone', async () => {
     const target = await wallet();
     const data = bet(target);

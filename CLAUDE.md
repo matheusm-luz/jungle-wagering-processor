@@ -4,7 +4,7 @@
 
 Take-home challenge for a Senior Backend position at Jungle Gaming: a distributed financial service that processes wagering transactions (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) from several providers, over HTTP and SQS. It is graded on financial correctness, concurrency across instances, persistent idempotency, balance/ledger consistency, inbox/outbox messaging, failure recovery and clarity of decisions — not on CRUD.
 
-- The statement is the source of truth: `README.md` today, `docs/CHALLENGE.md` once the solution README exists. Never edit its content.
+- The statement is the source of truth: [docs/CHALLENGE.md](docs/CHALLENGE.md). Never edit its content.
 - Requirements and open interpretations: [docs/spec/REQUIREMENTS.md](docs/spec/REQUIREMENTS.md).
 - Time budget, confirmed decisions and current status: [docs/PROGRESS.md](docs/PROGRESS.md). Read it first in every session. The deadline is 2026-11-15 10:32.
 
@@ -52,7 +52,7 @@ Docker must be running for everything except `typecheck`, `lint` and `test:unit`
 | `bun run test:unit` | Tests with no I/O | exists |
 | `bun run test:integration` | Real PostgreSQL and LocalStack. Builds the `test` image and runs the suite inside it, through Docker Compose | exists |
 | `bun run test:concurrency` | Real parallelism: spawns three `bun src/main.ts` processes inside the `test` container (`test/support/processes.ts`) | exists |
-| `bun run test:load` | Optional load test | planned, optional |
+| `bun run test:load` | Optional load experiment (R-76): three processes inside the `test` container, about two minutes; `-e LOAD_*` variables in docs/LOAD-TEST.md | exists |
 | `bun run migrate up` / `down` | Apply pending migrations, or revert the latest one, on `DATABASE_URL` | exists |
 | `bun run start` | Run one instance on the host; needs `.env` (see `.env.example`) | exists |
 | `docker compose up -d --build --wait` | Whole stack: PostgreSQL, LocalStack, one-shot `migrate`, `app`. Add `--scale app=3` for three instances | exists |

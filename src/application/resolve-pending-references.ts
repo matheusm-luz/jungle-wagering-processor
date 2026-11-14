@@ -1,6 +1,6 @@
 import type { EventContext } from '../domain/events/integration-event';
 import { FailureCode } from '../domain/failure-code';
-import type { WagerTransactionStatus } from '../domain/wager-transaction';
+import { WagerTransactionStatus } from '../domain/wager-transaction';
 import type { Clock, DuePending, IdGenerator, UnitOfWork } from './ports';
 import { delayBeforeNextAttempt, type ReferenceRetryPolicy } from './reference-retry-policy';
 import { settle, settlementEvents } from './settlement';
@@ -75,21 +75,47 @@ export class ResolvePendingReferences {
   }
 
   /**
-   * Pushes a row whose retry failed unexpectedly by the maximum delay, without counting an attempt,
-   * so it leaves the head of the queue instead of blocking every worker (S7 review, M1). Under the
-   * wallet lock, like a retry; a row that is no longer waiting is left alone.
+   * Pushes a row whose retry failed unexpectedly by the maximum delay, so it leaves the head of the
+   * queue instead of blocking every worker (S7 review, M1). Under the wallet lock, like a retry; a
+   * row that is no longer waiting, or no longer due, is left alone. A transient failure (the database or a lock) never
+   * counts an attempt, so an outage cannot fail a transaction. A non-transient one counts
+   * (`countsAttempt`), and the attempt that exhausts the policy makes the row `FAILED` with
+   * `PROCESSING_FAILED` and its event (docs/tasks/S12.md, Q2).
    */
-  postpone({ id, walletId }: WalletRow): Promise<void> {
+  postpone(
+    { id, walletId }: WalletRow,
+    { countsAttempt = false }: { countsAttempt?: boolean } = {},
+  ): Promise<'skipped' | 'postponed' | 'FAILED'> {
     return this.unitOfWork.run(async (scope) => {
       const wallet = await scope.wallets.lock(walletId);
       const pending = wallet === undefined ? undefined : await scope.transactions.loadPending(id);
-      if (pending === undefined) return;
-      const at = this.clock.now().getTime();
-      await scope.transactions.reschedule(
-        id,
-        pending.attempts,
-        new Date(at + this.policy.maxDelayMs),
-      );
+      const at = this.clock.now();
+      // The re-check of `retry`: another worker whose retry failed in the same round already
+      // postponed it, so counting again would charge one round twice (S12 review).
+      if (wallet === undefined || pending === undefined || pending.nextAttemptAt > at) {
+        return 'skipped';
+      }
+      const attempts = pending.attempts + (countsAttempt ? 1 : 0);
+      if (!countsAttempt || attempts < this.policy.maxAttempts) {
+        await scope.transactions.reschedule(
+          id,
+          attempts,
+          new Date(at.getTime() + this.policy.maxDelayMs),
+        );
+        return 'postponed';
+      }
+
+      const { transaction } = pending;
+      transaction.fail(FailureCode.ProcessingFailed);
+      const correlationId = pending.correlationId ?? this.ids.newId();
+      const events = settlementEvents(transaction, wallet, undefined, () => ({
+        eventId: this.ids.newId(),
+        correlationId,
+        occurredAt: at,
+      }));
+      await scope.transactions.finish(transaction, attempts);
+      await scope.outbox.enqueue(events);
+      return WagerTransactionStatus.Failed;
     });
   }
 }

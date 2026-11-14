@@ -26,6 +26,8 @@ const HTTP_STATUS: Partial<Record<WagerTransactionStatus, number>> = {
   [WagerTransactionStatus.Processed]: 200,
   [WagerTransactionStatus.PendingReference]: 202,
   [WagerTransactionStatus.Rejected]: 422,
+  // Terminal and with no effect: resending the key replays it, like a rejection (S12 Q3).
+  [WagerTransactionStatus.Failed]: 422,
 };
 
 export interface WagerTransactionResponse {
@@ -80,7 +82,7 @@ export class WageringController {
 
     const status = HTTP_STATUS[transaction.status];
     const { observedBalance, failureCode } = transaction;
-    // shortcut: FAILED has no HTTP status in ARCHITECTURE §6 yet and S4 never produces it; S12 decides.
+    // Every committed status has an answer and an observed balance; anything else is a bug.
     if (status === undefined || observedBalance === undefined) {
       throw new Error(`No HTTP answer for a ${transaction.status} transaction`);
     }

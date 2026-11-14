@@ -110,6 +110,8 @@ export function settlementEvents(
       events.push(WagerTransactionProcessed.from(transaction, wallet, context()));
       break;
     case WagerTransactionStatus.Rejected:
+    // FAILED is told apart by its PROCESSING_FAILED code (docs/tasks/S12.md, Q2).
+    case WagerTransactionStatus.Failed:
       events.push(WagerTransactionRejected.from(transaction, wallet, context()));
       break;
     case WagerTransactionStatus.PendingReference:

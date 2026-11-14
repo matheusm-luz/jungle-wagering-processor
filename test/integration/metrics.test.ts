@@ -301,8 +301,8 @@ describe('lock conflicts (R-61)', () => {
     });
     try {
       await isLocked;
-      // 55P03 after DATABASE_LOCK_TIMEOUT_MS (200 ms): not an answer of ARCHITECTURE §6, so a 500.
-      expect(await submit(wager(wallet, 'BET', '30.00'))).toBe(500);
+      // 55P03 after DATABASE_LOCK_TIMEOUT_MS (200 ms): transient, so a 503 (ADR-05, S12).
+      expect(await submit(wager(wallet, 'BET', '30.00'))).toBe(503);
     } finally {
       release();
       await holder;

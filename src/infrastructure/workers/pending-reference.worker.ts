@@ -11,6 +11,7 @@ import { ENV } from '../../config/env.token';
 import { JsonLogger } from '../logging/json-logger';
 import { type LogContext, runWithLogContext } from '../logging/log-context';
 import { Metrics } from '../metrics/metrics';
+import { isTransientDatabaseError } from '../persistence/transient-errors';
 
 /**
  * Runs `ResolvePendingReferences` in every instance (ADR-05): one poll per interval, or at once
@@ -89,7 +90,7 @@ export class PendingReferenceWorker implements OnApplicationBootstrap, BeforeApp
           if (outcome !== 'skipped') this.logger.info('pending reference retried', { outcome });
         } catch (error) {
           this.logger.error('pending reference retry failed', { errorName: errorName(error) });
-          await this.postpone(row);
+          await this.postpone(row, !isTransientDatabaseError(error));
         }
       });
     }
@@ -97,12 +98,16 @@ export class PendingReferenceWorker implements OnApplicationBootstrap, BeforeApp
   }
 
   /**
-   * Moves a row that failed out of the head of the queue (S7 review, M1). shortcut: it never
-   * becomes FAILED and is retried every maximum delay; S12 decides when it does.
+   * Moves a row that failed out of the head of the queue (S7 review, M1). A non-transient failure
+   * counts an attempt, and the last one makes the row FAILED (docs/tasks/S12.md, Q2).
    */
-  private async postpone(row: DuePending): Promise<void> {
+  private async postpone(row: DuePending, countsAttempt: boolean): Promise<void> {
     try {
-      await this.resolver.postpone(row);
+      const outcome = await this.resolver.postpone(row, { countsAttempt });
+      if (outcome === 'FAILED') {
+        this.metrics.transactions.inc({ channel: 'worker', status: outcome });
+        this.logger.error('pending reference failed', { failureCode: 'PROCESSING_FAILED' });
+      }
     } catch (error) {
       this.logger.warn('pending reference postpone failed', { errorName: errorName(error) });
     }

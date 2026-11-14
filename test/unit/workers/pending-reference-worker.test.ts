@@ -17,19 +17,24 @@ const rows: DuePending[] = [
   { id: 'tx-2', walletId: 'wallet-2', providerId: 'provider-a', correlationId: undefined },
 ];
 
-/** A resolver whose every retry throws, as a row that always fails would. */
-function failingResolver() {
-  const calls = { findDue: 0, postponed: [] as string[] };
+/** A resolver whose every retry throws `error`, as a row that always fails would. */
+function failingResolver(
+  error: Error = new Error('poison row'),
+  outcome: 'postponed' | 'FAILED' = 'postponed',
+) {
+  const calls = { findDue: 0, postponed: [] as string[], counted: [] as boolean[] };
   const resolver = {
     findDue: async () => {
       calls.findDue++;
       return rows;
     },
     retry: async () => {
-      throw new Error('poison row');
+      throw error;
     },
-    postpone: async ({ id }: DuePending) => {
+    postpone: async ({ id }: DuePending, options?: { countsAttempt?: boolean }) => {
       calls.postponed.push(id);
+      calls.counted.push(options?.countsAttempt === true);
+      return outcome;
     },
   };
   return { resolver: resolver as unknown as ResolvePendingReferences, calls };
@@ -71,6 +76,57 @@ describe('PendingReferenceWorker (S7 review)', () => {
     );
     // Only the error's name: a driver message can carry row data.
     expect(JSON.stringify(lines)).not.toContain('poison row');
+  });
+
+  test('a non-transient error counts an attempt; a transient database error does not (S12 Q2)', async () => {
+    for (const [error, counted] of [
+      [new Error('poison row'), true],
+      [
+        Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }),
+        false,
+      ],
+      [new Error('Connection terminated unexpectedly'), false],
+    ] as const) {
+      const { resolver, calls } = failingResolver(error);
+      const worker = new PendingReferenceWorker(
+        resolver,
+        env,
+        capturingLogger().logger,
+        new Metrics(),
+      );
+
+      worker.onApplicationBootstrap();
+      await Bun.sleep(60);
+      await worker.beforeApplicationShutdown();
+
+      expect(calls.counted.length).toBeGreaterThan(0);
+      expect({ error: error.message, counted: calls.counted.every((c) => c === counted) }).toEqual({
+        error: error.message,
+        counted: true,
+      });
+    }
+  });
+
+  test('a row the postpone turns FAILED is counted on the worker channel and logged (S12 Q2)', async () => {
+    const { resolver } = failingResolver(new Error('poison row'), 'FAILED');
+    const { logger, lines } = capturingLogger();
+    const metrics = new Metrics();
+    const worker = new PendingReferenceWorker(resolver, env, logger, metrics);
+
+    worker.onApplicationBootstrap();
+    await Bun.sleep(60);
+    await worker.beforeApplicationShutdown();
+
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        level: 'error',
+        message: 'pending reference failed',
+        transactionId: 'tx-1',
+      }),
+    );
+    expect(await metrics.registry.getSingleMetricAsString('wager_transactions_total')).toContain(
+      'channel="worker",status="FAILED"',
+    );
   });
 
   test('a poll that rejects is logged and the worker keeps polling (m4)', async () => {

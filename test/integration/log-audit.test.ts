@@ -153,13 +153,13 @@ describe('log audit (R-60, statement §12)', () => {
       (await statusOf(refund.externalTransactionId)) === 'PROCESSED' ? true : undefined,
     );
 
-    // An unexpected error: the provider's settlement account is held, so the ledger insert's
-    // foreign-key check waits past the lock timeout and the request fails with a 500.
+    // A driver error: the provider's settlement account is held, so the ledger insert's
+    // foreign-key check waits past the lock timeout and the request fails with a 503 (S12).
     const failed = await sql.begin(async (tx) => {
       await tx`select id from ledger_accounts where provider_id = ${PROVIDER} for update`;
       return submit(wager(wallet, 'BET', AMOUNTS.failed));
     });
-    expect(failed.status).toBe(500);
+    expect(failed.status).toBe(503);
 
     // Reads.
     const id = String((await submit(bet)).result.transactionId);
@@ -244,9 +244,15 @@ describe('log audit (R-60, statement §12)', () => {
     ]) {
       expect(messages).toContain(expected);
     }
-    expect(lines.some((line) => line.level === 'error' && line.correlationId !== undefined)).toBe(
-      true,
-    );
+    // The driver error of the held account: a 503 since S12, logged at warn with its correlation id.
+    expect(
+      lines.some(
+        (line) =>
+          line.message === 'request failed, service unavailable' &&
+          line.errorCode === '55P03' &&
+          line.correlationId !== undefined,
+      ),
+    ).toBe(true);
 
     for (const line of lines) {
       const text = JSON.stringify(line);

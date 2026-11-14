@@ -17,7 +17,10 @@ export interface WagerTransactionRejectedData extends WagerTransactionProcessedD
   failureCode: FailureCode;
 }
 
-/** Emitted for every business rejection (statement §11). The balance did not move. */
+/**
+ * Emitted for every business rejection (statement §11), and for a `FAILED` transaction, whose
+ * `failureCode` is `PROCESSING_FAILED` (docs/tasks/S12.md, Q2). The balance did not move.
+ */
 export class WagerTransactionRejected extends IntegrationEvent<WagerTransactionRejectedData> {
   readonly eventType = 'WagerTransactionRejected';
   readonly version = 1;
@@ -35,12 +38,13 @@ export class WagerTransactionRejected extends IntegrationEvent<WagerTransactionR
   ): WagerTransactionRejected {
     const { observedBalance, failureCode } = transaction;
     if (
-      transaction.status !== WagerTransactionStatus.Rejected ||
+      (transaction.status !== WagerTransactionStatus.Rejected &&
+        transaction.status !== WagerTransactionStatus.Failed) ||
       observedBalance === undefined ||
       failureCode === undefined
     ) {
       throw new InvalidIntegrationEventError(
-        'WagerTransactionRejected needs a REJECTED transaction',
+        'WagerTransactionRejected needs a REJECTED or FAILED transaction',
       );
     }
 

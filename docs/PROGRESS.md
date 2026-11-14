@@ -16,9 +16,9 @@ The assistant has no reliable clock. Matheus states the current time; this file 
 
 ## Next step
 
-S11 is done (14 Nov), committed on the branch `feat/s11-observability`. Next is S12, failure modes.
+S12 is done (14 Nov), committed on the branch `feat/s12-failure-modes`. Next is S13, documentation and delivery.
 
-1. S11 reaches `main` through pull request #11, as S1 to S10 did; its CI run is green. Then `/sdd-implement S12` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
+1. S12 reaches `main` through a pull request, as S1 to S11 did, with a green CI run. Then `/sdd-implement S13` from an up-to-date `main`. The workflow commands are listed in `CLAUDE.md`.
 2. With no slack, the first overrun triggers the cut order of `PLAN.md`: optional items (already out), then the pt-BR translations.
 
 ## Phases
@@ -29,7 +29,7 @@ S11 is done (14 Nov), committed on the branch `feat/s11-observability`. Next is 
 | 1 | [spec/REQUIREMENTS.md](spec/REQUIREMENTS.md) | approved 13 Nov |
 | 2 | [ARCHITECTURE.md](../ARCHITECTURE.md) | approved 13 Nov |
 | 3 | [PLAN.md](PLAN.md) | approved 13 Nov |
-| 4 | Implementation, slice by slice | S0 to S11 done; next is S12 |
+| 4 | Implementation, slice by slice | S0 to S12 done; next is S13 |
 
 ## Decisions confirmed by Matheus (12 Nov, unless dated)
 
@@ -216,6 +216,16 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **Harness.** The `test` service now idles the pending-reference worker of spawned processes too (`PENDING_REFERENCE_POLL_INTERVAL_MS`); a concurrency test that needs it sets it, as `wallet-races` does. Found by the first CI run: a leftover REFUND rejected by a process leaked an event into the outbox concurrency test (docs/tasks/S11.md).
 - **CI.** `.github/workflows/ci.yml` runs typecheck, lint, unit, integration and concurrency on push to `main` and on pull requests, with Bun 1.4.4, the Compose stack and a read-only token. Its first run (PR #11) failed on the harness issue above; it passed after `989bf6e` (unit 139, integration 199, concurrency 18).
 
+## Findings from S12 that later slices depend on
+
+- **Decisions of 14 Nov (docs/tasks/S12.md).** Q1: dependencies are cut and restored through a TCP proxy in front of the real containers (`test/support/tcp-proxy.ts`), not stopped. Q2: a non-transient worker failure counts an attempt and the last one makes the row `FAILED` (L-07 accepted). Q3: `FAILED` answers 422.
+- **Transient errors.** `src/infrastructure/persistence/transient-errors.ts` is the one classification: 503 in `ErrorFilter`, no attempt counted in the pending-reference worker. The SQS consumer still treats every unclassified error as transient, so it needs no change.
+- **`DATABASE_STATEMENT_TIMEOUT_MS`** (10 s) on every application connection, refused unless above `DATABASE_LOCK_TIMEOUT_MS`: it also bounds a lock wait. A test or deployment that raises the lock timeout must raise it too.
+- **For S13.** The README must say: 503 with `Retry-After` is safe to resend with the same key; `FAILED` is 422 `PROCESSING_FAILED`; a PostgreSQL outage longer than about 75 s dead-letters the SQS messages received meanwhile (ARCHITECTURE §9), and how to redrive them.
+- **Review (14 Nov, PR #12).** Fixed in a second commit: `postpone` re-checks that the row is still due under the wallet lock, so two workers failing the same round count one attempt; the 503 resend rationale covers a connection lost during `COMMIT` (docs/tasks/S12.md).
+- **Independent review (14 Nov).** No blocker; M1, M2, m5, m6 and m7 fixed in a third commit (DNS failures are transient, a test for the 500 branch, a real race in the postpone test, `POST /wallets` resend documented, the shared attempt counter in L-07). M3 stays documented for S13; m4 not done. Details in docs/tasks/S12.md.
+- **Not built (offered).** Pausing the SQS consumer while PostgreSQL is unreachable, which would close the 75 s limit above.
+
 ## Slices
 
 Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
@@ -236,7 +246,7 @@ Status: `todo`, `doing`, `done`. Details and tests in [PLAN.md](PLAN.md).
 | S9 | SQS consumer | 14 Nov | 2.5 | done 13 Nov |
 | S10 | Outbox publisher | 14 Nov | 2.0 | done 13 Nov |
 | S11 | Observability and CI | 14 Nov | 1.0 | done 14 Nov |
-| S12 | Failure modes | 14 Nov | 1.0 | todo |
+| S12 | Failure modes | 14 Nov | 1.0 | done 14 Nov |
 | S13 | Documentation and delivery | 14 Nov | 3.0 | todo |
 | — | Double-entry, folded into S2, S3, S4, S6, S8 | 13 Nov | +1.5 | done 13 Nov |
 

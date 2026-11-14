@@ -10,6 +10,7 @@ import { RequestValidationError } from './request-validation.error';
 /**
  * ADR-05: the same request may be resent at once with the same key. Usually nothing was committed;
  * if the connection dropped during COMMIT and the server committed, the resend replays the result.
+ * `POST /wallets` has no key: there the resend of a committed opening is 409 WALLET_ALREADY_EXISTS.
  */
 const RETRY_AFTER_S = '1';
 

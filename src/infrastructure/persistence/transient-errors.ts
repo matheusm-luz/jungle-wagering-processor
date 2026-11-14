@@ -6,7 +6,17 @@
  * `25P03` `idle_in_transaction_session_timeout`.
  */
 const TRANSIENT_SQLSTATE = /^(08|53|57)|^(55P03|40001|40P01|25P03)$/;
-const TRANSIENT_SOCKET = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE']);
+/** Includes name resolution: a stopped Compose service leaves the network and its name (S12 review). */
+const TRANSIENT_SOCKET = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EPIPE',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+]);
 /** Errors the `pg` driver and pool raise without a code. */
 const TRANSIENT_MESSAGE = /^(timeout exceeded when trying to connect|Connection terminated)/;
 

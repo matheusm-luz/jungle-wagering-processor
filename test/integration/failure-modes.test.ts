@@ -279,6 +279,19 @@ async function processedOnce(externalTransactionId: string): Promise<true | unde
   return true;
 }
 
+describe('a database host that does not resolve (S12 review)', () => {
+  test('a request is 503 and the instance is not ready, as when a stopped Compose service leaves the network', async () => {
+    const url = new URL(testEnv.DATABASE_URL);
+    url.hostname = 'postgres-stopped.invalid';
+    const on = await start({ DATABASE_URL: url.toString(), DATABASE_CONNECT_TIMEOUT_MS: 1000 });
+
+    await expectUnavailable(
+      await submit(on, bet({ id: newId(), playerId: `player-${newId()}` }, '5.00')),
+    );
+    expect((await fetch(`${on.url}/health/ready`)).status).toBe(503);
+  });
+});
+
 describe('messaging while a dependency is unreachable (R-63)', () => {
   test('the consumer survives SQS being unreachable and processes the waiting message once it returns', async () => {
     const aws = throughProxy(testEnv.AWS_ENDPOINT_URL as string);

@@ -377,9 +377,12 @@ describe('ResolvePendingReferences — FAILED (S12, docs/tasks/S12.md Q2)', () =
     const { id } = await refundBeforeBet(wallet);
     const failed = { id, walletId: wallet.id };
 
-    // Both retries failed on the same due row; their postpones then run one after the other.
-    expect(await resolver().postpone(failed, { countsAttempt: true })).toBe('postponed');
-    expect(await resolver().postpone(failed, { countsAttempt: true })).toBe('skipped');
+    // Both retries failed on the same due row; their postpones race for the wallet lock.
+    const outcomes = await Promise.all([
+      resolver().postpone(failed, { countsAttempt: true }),
+      resolver().postpone(failed, { countsAttempt: true }),
+    ]);
+    expect(outcomes.sort()).toEqual(['postponed', 'skipped']);
 
     expect(await row(id)).toMatchObject({ status: 'PENDING_REFERENCE', reference_attempts: 1 });
     await exhaust(id, wallet.id);

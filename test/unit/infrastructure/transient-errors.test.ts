@@ -24,6 +24,11 @@ describe('isTransientDatabaseError', () => {
       'ECONNRESET',
       'ETIMEDOUT',
       'EPIPE',
+      // A stopped Compose service leaves the network: its name no longer resolves (S12 review).
+      'ENOTFOUND',
+      'EAI_AGAIN',
+      'EHOSTUNREACH',
+      'ENETUNREACH',
     ]) {
       expect({ code, transient: isTransientDatabaseError(withCode(code)) }).toEqual({
         code,

@@ -223,6 +223,7 @@ Setup that was verified and can be reused in S0 (the throwaway code itself was n
 - **`DATABASE_STATEMENT_TIMEOUT_MS`** (10 s) on every application connection, refused unless above `DATABASE_LOCK_TIMEOUT_MS`: it also bounds a lock wait. A test or deployment that raises the lock timeout must raise it too.
 - **For S13.** The README must say: 503 with `Retry-After` is safe to resend with the same key; `FAILED` is 422 `PROCESSING_FAILED`; a PostgreSQL outage longer than about 75 s dead-letters the SQS messages received meanwhile (ARCHITECTURE §9), and how to redrive them.
 - **Review (14 Nov, PR #12).** Fixed in a second commit: `postpone` re-checks that the row is still due under the wallet lock, so two workers failing the same round count one attempt; the 503 resend rationale covers a connection lost during `COMMIT` (docs/tasks/S12.md).
+- **Independent review (14 Nov).** No blocker; M1, M2, m5, m6 and m7 fixed in a third commit (DNS failures are transient, a test for the 500 branch, a real race in the postpone test, `POST /wallets` resend documented, the shared attempt counter in L-07). M3 stays documented for S13; m4 not done. Details in docs/tasks/S12.md.
 - **Not built (offered).** Pausing the SQS consumer while PostgreSQL is unreachable, which would close the 75 s limit above.
 
 ## Slices

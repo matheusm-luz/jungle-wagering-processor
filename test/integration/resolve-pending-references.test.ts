@@ -372,6 +372,19 @@ describe('ResolvePendingReferences — FAILED (S12, docs/tasks/S12.md Q2)', () =
     });
   });
 
+  test('two workers postponing the same failed round count one attempt: the second finds the row no longer due (S12 review)', async () => {
+    const wallet = await openWallet('100.00');
+    const { id } = await refundBeforeBet(wallet);
+    const failed = { id, walletId: wallet.id };
+
+    // Both retries failed on the same due row; their postpones then run one after the other.
+    expect(await resolver().postpone(failed, { countsAttempt: true })).toBe('postponed');
+    expect(await resolver().postpone(failed, { countsAttempt: true })).toBe('skipped');
+
+    expect(await row(id)).toMatchObject({ status: 'PENDING_REFERENCE', reference_attempts: 1 });
+    await exhaust(id, wallet.id);
+  });
+
   test('a transient failure never counts: the 10th postpone without counting leaves the row waiting', async () => {
     const wallet = await openWallet('100.00');
     const { id } = await refundBeforeBet(wallet);

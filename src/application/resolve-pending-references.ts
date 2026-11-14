@@ -77,7 +77,7 @@ export class ResolvePendingReferences {
   /**
    * Pushes a row whose retry failed unexpectedly by the maximum delay, so it leaves the head of the
    * queue instead of blocking every worker (S7 review, M1). Under the wallet lock, like a retry; a
-   * row that is no longer waiting is left alone. A transient failure (the database or a lock) never
+   * row that is no longer waiting, or no longer due, is left alone. A transient failure (the database or a lock) never
    * counts an attempt, so an outage cannot fail a transaction. A non-transient one counts
    * (`countsAttempt`), and the attempt that exhausts the policy makes the row `FAILED` with
    * `PROCESSING_FAILED` and its event (docs/tasks/S12.md, Q2).
@@ -89,8 +89,12 @@ export class ResolvePendingReferences {
     return this.unitOfWork.run(async (scope) => {
       const wallet = await scope.wallets.lock(walletId);
       const pending = wallet === undefined ? undefined : await scope.transactions.loadPending(id);
-      if (wallet === undefined || pending === undefined) return 'skipped';
       const at = this.clock.now();
+      // The re-check of `retry`: another worker whose retry failed in the same round already
+      // postponed it, so counting again would charge one round twice (S12 review).
+      if (wallet === undefined || pending === undefined || pending.nextAttemptAt > at) {
+        return 'skipped';
+      }
       const attempts = pending.attempts + (countsAttempt ? 1 : 0);
       if (!countsAttempt || attempts < this.policy.maxAttempts) {
         await scope.transactions.reschedule(

@@ -7,7 +7,10 @@ import { JsonLogger } from '../logging/json-logger';
 import { isTransientDatabaseError } from '../persistence/transient-errors';
 import { RequestValidationError } from './request-validation.error';
 
-/** ADR-05: a transient failure committed nothing, so the same request may be resent at once. */
+/**
+ * ADR-05: the same request may be resent at once with the same key. Usually nothing was committed;
+ * if the connection dropped during COMMIT and the server committed, the resend replays the result.
+ */
 const RETRY_AFTER_S = '1';
 
 /** ARCHITECTURE §6: the status of each outcome that is answered without being persisted. */

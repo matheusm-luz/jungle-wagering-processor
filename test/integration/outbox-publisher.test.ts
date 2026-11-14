@@ -237,6 +237,51 @@ describe('outbox publisher', () => {
     expect(eventIds(received)).toEqual(rows.map((row) => row.id));
   });
 
+  test('a broker that accepts the connection and never answers is abandoned after the publish timeout: the rows are rescheduled, not held (S10 review, m2)', async () => {
+    // A network that hangs, not a fake broker: nothing is ever answered on this socket.
+    const silent = Bun.listen({
+      hostname: '127.0.0.1',
+      port: 0,
+      socket: { data: () => {}, open: () => {} },
+    });
+    const hanging = createSnsClient({
+      ...testEnv,
+      AWS_ENDPOINT_URL: `http://127.0.0.1:${silent.port}`,
+    });
+    const { wallet, rows } = await walletWithEvents();
+    let now = new Date();
+    const clock: Clock = { now: () => now };
+    try {
+      const env: Env = { ...testEnv, ...topic.env, OUTBOX_PUBLISH_TIMEOUT_MS: 500 };
+      const stuck = new OutboxPublisher(
+        orm,
+        hanging,
+        env,
+        clock,
+        new JsonLogger({ level: 'silent', write: () => {} }),
+      );
+      const started = performance.now();
+      expect(await stuck.publishDue()).toEqual({ published: 0, failed: 4 });
+      expect(performance.now() - started).toBeLessThan(2000);
+    } finally {
+      hanging.destroy();
+      silent.stop(true);
+    }
+    const after = await rowsOf(wallet.id);
+    expect(after.map((row) => [row.attempts, row.published_at])).toEqual([
+      [1, null],
+      [1, null],
+      [1, null],
+      [1, null],
+    ]);
+
+    now = after[0]?.next_attempt_at as Date;
+    expect(await publisher({}, clock).publisher.publishDue()).toEqual({ published: 4, failed: 0 });
+    expect(eventIds(await topic.collect((all) => all.length >= 4))).toEqual(
+      rows.map((row) => row.id),
+    );
+  });
+
   test('a duplicated publication carries the same eventId: the subscriber receives one copy (statement §11)', async () => {
     const { rows } = await walletWithEvents();
     const ids = rows.map((row) => row.id);

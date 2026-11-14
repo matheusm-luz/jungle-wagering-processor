@@ -37,8 +37,9 @@ services:
     volumes:
       - ./infra/localstack/init:/etc/localstack/init/ready.d:ro
     healthcheck:
-      # Healthy only after the init script created the queues, the topic and the subscription.
-      test: ["CMD-SHELL", "awslocal sns list-subscriptions --query 'length(Subscriptions)' --output text | grep -qx 1"]
+      # Healthy only after the init script created the queues, the topic and the subscription. Only
+      # the real topic is counted: a test topic a failed suite left behind must not make it unhealthy.
+      test: ["CMD-SHELL", "awslocal sns list-subscriptions-by-topic --topic-arn arn:aws:sns:us-east-1:000000000000:wager-events.fifo --query 'length(Subscriptions)' --output text | grep -qx 1"]
       interval: 2s
       timeout: 5s
       retries: 30

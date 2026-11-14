@@ -110,39 +110,40 @@ const allPublished = (walletIds: string[]) =>
 
 const ids = (events: ReceivedEvent[]) => events.map((event) => event.body.eventId).sort();
 
-/** Two processes: one commits events over HTTP with its publisher idle, one stays to be killed. */
-async function committedEvents(): Promise<{ wallet: Wallet; rows: { id: string }[] }> {
+/**
+ * Statement §11 with a publisher that dies: the failpoint process starts first, while nothing is
+ * pending, so it is ready before it can die (S10 review, m6); a second process, its publisher idle,
+ * commits a wallet's events over HTTP and is killed before anything is published; the failpoint
+ * process then locks a batch of them and kills itself before or after `PublishBatch`.
+ */
+async function eventsWithACrashedPublisher(
+  failpoint: 'crash-before-publish' | 'crash-after-publish',
+): Promise<{ wallet: Wallet; rows: { id: string }[] }> {
+  const crashing = await startProcesses(1, publisherEnv({ OUTBOX_PUBLISHER_FAILPOINT: failpoint }));
   const committer = await startProcesses(1);
   try {
     const wallet = await openWallet(committer.urls[0] as string);
     await betOverHttp(committer.urls[0] as string, wallet);
-    // Statement §11 step 2: the instance that committed dies before anything is published.
     process.kill(committer.pids[0] as number, 'SIGKILL');
     await committer.exited[0];
+    await crashing.exited[0];
     const rows = await outboxOf([wallet.id]);
     expect(rows).toHaveLength(4);
+    // Whatever it locked, nothing was recorded as published.
     expect(rows.every((row) => !row.published)).toBe(true);
     return { wallet, rows };
   } catch (error) {
     await committer.stop();
+    await crashing.stop();
     throw error;
   }
 }
 
 describe('outbox publisher across processes', () => {
   test('committed, then the process dies; a publisher killed with the batch locked publishes nothing; another process publishes every event once (statement §11, R-57)', async () => {
-    const { wallet, rows } = await committedEvents();
+    const { wallet, rows } = await eventsWithACrashedPublisher('crash-before-publish');
 
-    // First poll after 1.5 s, so the harness sees the process ready before the failpoint kills it.
-    const crashing = await startProcesses(
-      1,
-      publisherEnv({
-        OUTBOX_POLL_INTERVAL_MS: '1500',
-        OUTBOX_PUBLISHER_FAILPOINT: 'crash-before-publish',
-      }),
-    );
-    await crashing.exited[0];
-    expect((await outboxOf([wallet.id])).every((row) => !row.published)).toBe(true);
+    expect(await topic.collect(() => false, 1500)).toEqual([]);
     // Its locks went with its connection: the rows can be locked again at once.
     const [lockable] = await sql`
       select count(*)::int as n from (select id from outbox_messages
@@ -161,20 +162,13 @@ describe('outbox publisher across processes', () => {
   });
 
   test('a process killed after publishing and before marking: another process publishes again under the same eventId and the subscriber gets one copy (statement §11)', async () => {
-    const { wallet, rows } = await committedEvents();
+    const { wallet, rows } = await eventsWithACrashedPublisher('crash-after-publish');
+    const all = rows.map((row) => row.id).sort();
 
-    const crashing = await startProcesses(
-      1,
-      publisherEnv({
-        OUTBOX_POLL_INTERVAL_MS: '1500',
-        OUTBOX_PUBLISHER_FAILPOINT: 'crash-after-publish',
-      }),
-    );
-    await crashing.exited[0];
-    // Published, never recorded as published.
-    const first = await topic.collect((all) => all.length >= 4);
-    expect(ids(first)).toEqual(rows.map((row) => row.id).sort());
-    expect((await outboxOf([wallet.id])).every((row) => !row.published)).toBe(true);
+    // The batch it published before dying: the opening's events, or all four.
+    const first = await topic.collect((events) => events.length >= 2, 5000);
+    expect(first.length).toBeGreaterThanOrEqual(2);
+    expect(ids(first).every((id) => all.includes(id))).toBe(true);
 
     const survivor = await startProcesses(1, publisherEnv());
     try {
@@ -182,7 +176,10 @@ describe('outbox publisher across processes', () => {
     } finally {
       await survivor.stop();
     }
-    // The second publication carried the same event ids; the broker dropped every copy.
+    // The survivor published all four again; the broker dropped the copies of the first batch, so
+    // only the events the dead process never published arrive now.
+    const rest = await topic.collect((events) => first.length + events.length >= 4, 5000);
+    expect(ids([...first, ...rest])).toEqual(all);
     expect(await topic.collect(() => false, 2000)).toEqual([]);
     expect(first.every((event) => event.dedupId === event.body.eventId)).toBe(true);
   });

@@ -6,6 +6,7 @@ import type { UnitOfWork } from '../../src/application/ports';
 import { ProcessWagerTransaction } from '../../src/application/process-wager-transaction';
 import { Money } from '../../src/domain/money';
 import { WagerTransactionKind, WagerTransactionStatus } from '../../src/domain/wager-transaction';
+import { ANY_PROVIDER } from '../../src/infrastructure/http/auth';
 import { Metrics } from '../../src/infrastructure/metrics/metrics';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { migratedDatabase } from '../support/database';
@@ -50,7 +51,12 @@ describe('ProcessWagerTransaction', () => {
           }),
         ),
     };
-    const useCase = new ProcessWagerTransaction(slowLock, { now: () => now }, { newId });
+    const useCase = new ProcessWagerTransaction(
+      slowLock,
+      { now: () => now },
+      { newId },
+      ANY_PROVIDER,
+    );
     const { wallet } = await seedWallet(sql, '100.00');
     const externalTransactionId = `tx-${newId()}`;
 
@@ -104,6 +110,7 @@ describe('ProcessWagerTransaction', () => {
       failingAfterOutbox,
       { now: () => new Date() },
       { newId },
+      ANY_PROVIDER,
     );
     const { wallet } = await seedWallet(sql, '100.00');
     const walletId = wallet.id as string;
@@ -177,6 +184,7 @@ describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () 
       new MikroOrmUnitOfWork(orm, { newId }, new Metrics()),
       { now: () => new Date() },
       { newId },
+      ANY_PROVIDER,
     );
     const { walletId, command } = await bet();
     const message = inbox();
@@ -200,6 +208,7 @@ describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () 
       new MikroOrmUnitOfWork(orm, { newId }, new Metrics()),
       { now: () => new Date() },
       { newId },
+      ANY_PROVIDER,
     );
     const { walletId, command } = await bet();
     const message = inbox();
@@ -221,6 +230,7 @@ describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () 
       new MikroOrmUnitOfWork(orm, { newId }, new Metrics()),
       { now: () => new Date() },
       { newId },
+      ANY_PROVIDER,
     );
     const { walletId, command } = await bet();
     const message = inbox();
@@ -242,6 +252,7 @@ describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () 
       new MikroOrmUnitOfWork(orm, { newId }, new Metrics()),
       { now: () => new Date() },
       { newId },
+      ANY_PROVIDER,
     );
     const { command } = await bet();
     const message = inbox();
@@ -276,6 +287,7 @@ describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () 
       failingAfterOutbox,
       { now: () => new Date() },
       { newId },
+      ANY_PROVIDER,
     );
     const { walletId, command } = await bet();
     const message = inbox();

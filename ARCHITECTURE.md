@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** approved by Matheus on 13 Nov 2026; every decision below was taken by him on 12 Nov. What is already implemented is tracked slice by slice in [docs/PROGRESS.md](docs/PROGRESS.md).
+**Status:** final, 14 Nov 2026. Every decision below was taken by Matheus; ADR-14 and the interpretations dated in §7 were added while building. The statement is [docs/CHALLENGE.md](docs/CHALLENGE.md); how each requirement is proven is in [docs/spec/REQUIREMENTS.md](docs/spec/REQUIREMENTS.md); the build log is [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ## 1. Shape of the system
 
@@ -35,7 +35,7 @@ A port exists only where it protects a boundary: persistence, the broker, time, 
 Every balance change runs this sequence inside one `em.transactional()` call, at `READ COMMITTED`.
 
 1. Validate the payload outside the transaction: shape, closed field list, `Money`, `kind` is not `OPENING`, reference present for `REFUND` and `ROLLBACK`. Failure → 400, nothing persisted.
-2. Compute `payloadHash`.
+2. Compute `payloadHash`. Over HTTP, ask `ProviderIdentityPort` whether the caller may act for `providerId` (ADR-08). Refused → 403, nothing persisted.
 3. `BEGIN`.
 4. SQS only: insert the inbox row `(consumer_name, message_id)`. If it already exists the message was already committed: stop and ack.
 5. `SELECT … FOR UPDATE` on the wallet row. Unknown wallet → 404 (L-08).
@@ -96,6 +96,7 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 - **Context.** No `number` for money; fixed scale of 2; the domain cannot depend on ORM types.
 - **Options.** Database: `NUMERIC(19,2)` or `BIGINT` minor units. Domain: `decimal.js`, `big.js` or native `bigint`.
 - **Decision.** `NUMERIC(19,2)` plus `CHAR(3)`; `decimal.js` inside `Money`, on an isolated `Decimal.clone({ precision: 40 })`.
+- **Mapping.** The MikroORM records declare money columns as `p.decimal().columnType('numeric(19,2)')`, whose JavaScript type is `string`; the mappers build `Money.from({ amount, currency })` from the column and its sibling currency column, and write `Money.amount` back. `Money` never reaches the ORM and the records never hold a `number`.
 - **Consequences.** SQL stays readable and `SUM` is exact, which keeps reconciliation a single statement. The driver returns `NUMERIC` as a string, so no float appears at any point. The isolated instance matters: the default 20 significant digits would round large sums silently. Input is strict (L-02): exactly two decimals.
 
 ### ADR-03 — Idempotency and canonical hash (accepted)
@@ -116,7 +117,7 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 
 ### ADR-05 — Retry policies (accepted)
 
-- **Pending references.** Backoff `min(60s, 1s × 2ⁿ)`, 10 attempts, about 4 minutes of real attempts. The request's own lookup is not an attempt: the row is due at once, and after worker attempt k the next one is `min(60s, 1s × 2^(k-1))` later, so attempts run at 0, 1, 3, 7, 15, 31, 63, 123, 183 and 243 s (docs/tasks/S7.md, Q2). Events emitted by the worker keep the correlation id of the request (L-15). Attempt-based rather than a wall-clock TTL, so worker downtime does not consume the window. Exhausted → `REJECTED` with `REFERENCE_NOT_FOUND` and a `WagerTransactionRejected` event, also when the reference exists but is itself still waiting (L-10). The worker takes the wallet lock first and re-checks the row under it, so two workers never apply the same transaction. Every instance reads the same head of the queue; each shuffles its batch so they spread over different wallets, but a backlog of one wallet is still drained by one instance at a time. A retry that fails unexpectedly is postponed by the maximum delay, so it cannot hold the head of the queue. A transient database failure (`src/infrastructure/persistence/transient-errors.ts`) never counts an attempt, so an outage never fails a transaction; any other error counts one, and the attempt that exhausts the policy makes the row `FAILED` with `PROCESSING_FAILED` and a `WagerTransactionRejected` carrying that code (L-07, docs/tasks/S12.md Q2).
+- **Pending references.** Backoff `min(60s, 1s × 2ⁿ)`, 10 attempts, about 4 minutes of real attempts. Why 4 minutes: it outlasts, with margin, the retry window of the referenced transaction itself on SQS (about 75 s of backoff before the DLQ, below), so a `BET` delayed by its own retries is still found; a reference later than that went to the DLQ and needs an operator anyway, and holding the reversal longer would only delay its answer. The request's own lookup is not an attempt: the row is due at once, and after worker attempt k the next one is `min(60s, 1s × 2^(k-1))` later, so attempts run at 0, 1, 3, 7, 15, 31, 63, 123, 183 and 243 s (docs/tasks/S7.md, Q2). Events emitted by the worker keep the correlation id of the request (L-15). Attempt-based rather than a wall-clock TTL, so worker downtime does not consume the window. Exhausted → `REJECTED` with `REFERENCE_NOT_FOUND` and a `WagerTransactionRejected` event, also when the reference exists but is itself still waiting (L-10). The worker takes the wallet lock first and re-checks the row under it, so two workers never apply the same transaction. Every instance reads the same head of the queue; each shuffles its batch so they spread over different wallets, but a backlog of one wallet is still drained by one instance at a time. A retry that fails unexpectedly is postponed by the maximum delay, so it cannot hold the head of the queue. A transient database failure (`src/infrastructure/persistence/transient-errors.ts`) never counts an attempt, so an outage never fails a transaction; any other error counts one, and the attempt that exhausts the policy makes the row `FAILED` with `PROCESSING_FAILED` and a `WagerTransactionRejected` carrying that code (L-07, docs/tasks/S12.md Q2).
 - **SQS consumer.** Business outcome → commit and ack; this includes an unknown wallet, whose inbox row commits alone (L-08). Transient error → no ack, `ChangeMessageVisibility` of `min(120s, 5s × 2^(receives-1))`; the queue redrives to the DLQ after 5 receives. Anything not classified is transient, so an unexpected error still ends in the DLQ, never dropped. Permanent error (unreadable message, invalid payload, same `messageId` with a different payload or idempotency key, and the 409 conflicts `IDEMPOTENCY_KEY_CONFLICT` and `EXTERNAL_TRANSACTION_CONFLICT`, docs/tasks/S9.md Q1) → the consumer copies it to the DLQ itself, with a `failureReason` attribute and the broker's message id as deduplication id, then deletes it, so it does not block its FIFO group for five cycles. Each instance runs `SQS_CONSUMER_CONCURRENCY` loops (5) that receive one message each (Q3): SQS FIFO hands out nothing else of a group while one of its messages is in flight, so per-wallet order holds without code; a batch would count receives for the messages behind a failing head and the redrive policy would dead-letter them unattempted. A wallet lock waited for longer than `DATABASE_LOCK_TIMEOUT_MS` (5 s, ADR-01) is the typical transient error.
 - **HTTP.** No server-side retry; transient failure → 503 with `Retry-After: 1` and `SERVICE_UNAVAILABLE`, safe to resend with the same key: usually the unit of work committed nothing, and when the connection dropped during `COMMIT` after the server committed, the resend is an idempotent replay of the original result. `POST /wallets` has no idempotency key: a resend after an opening that did commit answers 409 `WALLET_ALREADY_EXISTS`, which tells the caller the wallet exists (S12 review, m6). Transient means a SQLSTATE of class `08`, `53` or `57`, or `55P03`, `40001`, `40P01`, `25P03`, a socket error, or the pool's acquisition timeout (S12). Any other driver error is a 500 whose log carries only the error name, code and constraint, never the driver's message (it can quote the row). PostgreSQL unreachable also makes `/health/ready` answer 503.
 - **Shutdown.** On `SIGTERM` the consumer starts no new receive, waits for in-flight messages up to `SQS_SHUTDOWN_GRACE_MS`, then returns the remaining ones with visibility 0. An open long poll is not aborted but left to end (`SQS_WAIT_TIME_S`, 10 s), and a message it brings is handed back at once: the broker can deliver to a poll the client already abandoned, and that message would stay invisible for a whole visibility timeout with no one working on it (found in S9). Compose gives the app 30 s to stop.
@@ -135,8 +136,8 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 
 ### ADR-08 — Authentication (accepted)
 
-- **Decision.** Not implemented. The extension point is explicit: a global no-op `AuthGuard` and a `ProviderIdentityPort`. Section 8 describes the Keycloak design.
-- **Consequences.** Zero evaluation points at risk, and adding an IdP later is additive.
+- **Decision.** Not implemented. The extension point is explicit in the code (S13, Q3): a global no-op `AuthGuard` (`APP_GUARD`, `src/infrastructure/http/auth.ts`) where a token would be verified, and a `ProviderIdentityPort` that `ProcessWagerTransaction.execute` consults before opening the transaction; a refusal is `PROVIDER_FORBIDDEN` (403) with nothing persisted. The bound implementation, `ANY_PROVIDER`, accepts every provider. The SQS path does not consult it: the queue is a trusted internal channel (statement §2), and the provider inside the message goes through the same domain rules. Section 8 describes the Keycloak design.
+- **Consequences.** Zero evaluation points at risk, and adding an IdP is additive: a guard that verifies the JWT and keeps its provider in the request context, and a port implementation that compares it. The check runs before `BEGIN` and outside the hash, so a refused caller takes no lock, and a replay of someone else's key by another provider is refused before the lookup. Reads are not gated yet (§9).
 
 ### ADR-09 — Proving multi-instance correctness (accepted)
 
@@ -204,6 +205,7 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 | `PROCESSED` | 200 | Done |
 | `PENDING_REFERENCE` | 202 | Wait for the event or query the transaction |
 | Invalid payload | 400 | Fix the payload |
+| Caller may not act for the provider (ADR-08; never today) | 403 | Use the provider's own credentials |
 | Unknown wallet or transaction | 404 | Fix the identifier |
 | Idempotency or uniqueness conflict | 409 | Do not resend; the key or id is already used |
 | `REJECTED` | 422 | Read `failureCode`; resending the same key replays the rejection |
@@ -225,6 +227,7 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 | `REFERENCE_ALREADY_REVERSED` | The reference already has a processed reversal | yes, `REJECTED` |
 | `PROCESSING_FAILED` | Permanent non-business error | yes, `FAILED` |
 | `VALIDATION_ERROR`, `IDEMPOTENCY_KEY_REQUIRED` | Invalid request | no, 400 |
+| `PROVIDER_FORBIDDEN` | The caller may not act for the request's provider (ADR-08) | no, 403 |
 | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND` | Unknown resource | no, 404 |
 | `IDEMPOTENCY_KEY_CONFLICT`, `EXTERNAL_TRANSACTION_CONFLICT`, `WALLET_ALREADY_EXISTS` | Conflict | no, 409 |
 | `SERVICE_UNAVAILABLE` | Transient failure | no, 503 |
@@ -236,26 +239,32 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 | L-01 | At most one processed reversal per reference, of any kind. A `ROLLBACK` of the `REFUND` itself stays allowed. Stricter than rule 7.4, to protect the "no duplicated credit" invariant. |
 | L-02 | Amounts must have exactly two decimals; `"25"` and `"25.5"` are 400. |
 | L-03 | `BET`, `WIN`, `REFUND` and `ROLLBACK` require a positive amount. `LOSS` and the opening balance accept zero. |
+| L-04 | The idempotency key and the pair provider + external id are two identities, each unique. The same pair under another key is 409 `EXTERNAL_TRANSACTION_CONFLICT`. On SQS, `data.idempotencyKey` plays the role of the header and stays out of the hash. |
+| L-05 | A replay returns the persisted state, including the balance observed when the transaction was applied; for a terminal status that is the original result, for a waiting one it is its current state. |
 | L-06 | `PENDING` is the initial in-memory state and is never committed; HTTP is synchronous. The schema refuses it. |
 | L-07 | `FAILED` is reached only by a persisted `PENDING_REFERENCE` row whose retries keep failing with a non-transient error: each counts an attempt, the last one makes it `FAILED` with `PROCESSING_FAILED`. Transient failures never count. The counter is the one of the reference lookups (`reference_attempts`, docs/tasks/S12.md Q2): a row with 9 lookups that then fails once ends `FAILED`, not `REFERENCE_NOT_FOUND`, and failures shorten the lookup window. Over HTTP and SQS an unexpected error rolls back and nothing is persisted. |
 | L-08 | A transaction for an unknown wallet is not persisted: 404 over HTTP; on SQS, ack with log, metric and inbox row, the inbox row committing alone. |
 | L-09 | `WIN` and `LOSS` may reference a `BET`: a `PROCESSED` `BET` of the same player, wallet, currency and round. No amount check, and a reversed `BET` can still be referenced. The rules bind the reference, not the settlement of the round. |
 | L-10 | A `REJECTED` or `FAILED` reference is `REFERENCE_NOT_PROCESSED`. A missing reference, or one that is itself `PENDING_REFERENCE`, makes the transaction wait as `PENDING_REFERENCE` (202). A transaction that exhausts its attempts while the reference is missing or itself still waiting is `REJECTED` with `REFERENCE_NOT_FOUND`: the code means the reference was never found `PROCESSED` within the window (S7 review, m2). |
+| L-11 | Events go to an SNS FIFO topic, `wager-events.fifo`, fanned out to SQS FIFO subscriptions (ADR-11). |
+| L-12 | Producers are advised to use the wallet id as `MessageGroupId` and the message id as `MessageDeduplicationId`. The consumer does not depend on either: ordering per wallet comes from the lock, deduplication from the inbox. |
 | L-13 | The ledger cursor is base64url of `<walletId>:<last sequence returned>`, in ascending order, refused on another wallet; the last page keeps it so a reader resumes after later writes, and a reader stops on `hasMore === false`, not on a null cursor. Keyset on `UNIQUE (wallet_id, sequence)`, so pages are stable under concurrent writes. Default 50, at most 200 per page. |
+| L-14 | No global order of events. Within a batch rows go in `(next_attempt_at, id)` order and FIFO keeps it per wallet; two publishers can invert two batches of one wallet, a retried row goes out after later ones, and clock skew between instances can invert two events of one wallet. Consumers order by `walletVersion` and deduplicate by `eventId`. |
 | L-15 | The correlation id comes from `X-Correlation-Id` or is generated, and is stored on the transaction, so events the pending-reference worker emits later keep it. |
 | L-16 | A currency is any ISO-4217 code by shape, three uppercase letters, with no allow-list; every currency is handled at a scale of two. The challenge runs in `BRL`, the model stays multi-currency. |
 | L-17 | One amount has one spelling: digits, a dot and two decimals, with no sign, no whitespace, no leading zeros and at most 17 integer digits, the range of `NUMERIC(19,2)`. |
 | L-18 | `REFUND` and `ROLLBACK` require a reference; `WIN` and `LOSS` accept one; `BET` and `OPENING` refuse one. A transaction cannot reference itself. Violations are invalid requests, not persisted rejections. |
+| L-19 | `POST /wallets` has no idempotency key (statement §9): a resend after a lost 201 is 409 `WALLET_ALREADY_EXISTS`, without the wallet id, because answering with it would turn the conflict into a lookup by player for any caller while there is no authentication. A lookup by player and currency is the additive fix. |
 | L-20 | The HTTP answer to `WALLET_PLAYER_MISMATCH` carries no `balance`: without authentication it would reveal another player's balance. The row and the internal event keep it. |
 
-The remaining proposed interpretations are listed in [docs/spec/REQUIREMENTS.md](docs/spec/REQUIREMENTS.md) and move here as they are confirmed.
+Every interpretation is accepted (L-04, L-05, L-11, L-12 and L-19 on 14 Nov, S13 Q2); the question behind each is in [docs/spec/REQUIREMENTS.md](docs/spec/REQUIREMENTS.md) §3.
 
 ## 8. Authentication design (not implemented)
 
 - Keycloak in Docker Compose with an imported realm. Each provider is a confidential client using the OAuth 2.0 client-credentials grant.
 - The API is a resource server: it validates the JWT signature against the realm JWKS, plus issuer, audience and scope.
-- `ProviderIdentityPort` returns the provider bound to the token. The use case rejects a request whose `providerId` differs from it.
-- Health endpoints stay open. Queue messages are a trusted internal channel, but the provider identity inside the message still goes through the same domain validations.
+- The `AuthGuard` already registered globally verifies the token and keeps its provider in the request context. The `ProviderIdentityPort` implementation compares it with the request's `providerId`; the use case already calls it and answers 403 `PROVIDER_FORBIDDEN` (ADR-08). The reads by provider + external id would check the same.
+- Health endpoints and `/metrics` stay open: the guard is global, so the real one must exempt them. Queue messages are a trusted internal channel, but the provider identity inside the message still goes through the same domain validations.
 
 ## 9. Known limitations
 
@@ -269,7 +278,8 @@ The remaining proposed interpretations are listed in [docs/spec/REQUIREMENTS.md]
 - A `FAILED` event is a `WagerTransactionRejected` with `PROCESSING_FAILED`: a consumer tells a failure from a business rejection by the code only, and the balance in it is the one observed when the row started waiting, which the schema keeps.
 - Reads have no authentication (ADR-08): a transaction found by provider + external id, which may be guessable, shows its observed balance, except for `WALLET_PLAYER_MISMATCH` (L-20). The provider bound to the token closes it.
 - Reconciliation sums credits and debits of one wallet separately; a sum beyond `NUMERIC(19,2)` (10¹⁷ of turnover on one wallet) is refused by `Money` and answered 500.
-- A hot wallet is processed serially by design; its throughput is bounded by the duration of one transaction.
+- A hot wallet is processed serially by design; its throughput is bounded by the duration of one transaction (between 166 and 251 transactions/s, 4 to 6 ms each, across the runs of [docs/LOAD-TEST.md](docs/LOAD-TEST.md)).
+- The outbox publisher runs one loop per instance, one `PublishBatch` of 10 at a time. Under sustained load it falls behind the writers: at about 1 290 transactions/s on three instances the lag reached 36 s and drained 44 s after the load stopped (docs/LOAD-TEST.md). Events are late, never lost or early. Several loops per instance (the `SKIP LOCKED` scan allows it) or more instances would raise it.
 - A consumer that dies (or is killed) while its long poll is open can leave a message the broker handed to that poll invisible for one visibility timeout (30 s) before another instance gets it. Delayed, never lost; a graceful `SIGTERM` avoids it.
 - `ApproximateReceiveCount` is the broker's: a message whose processing outlives its visibility timeout is received again and counts a receive even though the first attempt is still running. The inbox keeps it to one effect; it can reach the DLQ sooner than five real failures.
 - The emulator image is frozen and differs from AWS in timing details.

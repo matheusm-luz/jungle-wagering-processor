@@ -36,6 +36,15 @@ export class TransactionNotFoundError extends ApplicationError {
   }
 }
 
+/** ADR-08: the authenticated caller may not act for the request's `providerId`. */
+export class ProviderForbiddenError extends ApplicationError {
+  readonly code = 'PROVIDER_FORBIDDEN';
+
+  constructor() {
+    super('The caller may not act for this provider');
+  }
+}
+
 /** ADR-03: the same key with another payload is a conflict, never a replay. */
 export class IdempotencyKeyConflictError extends ApplicationError {
   readonly code = 'IDEMPOTENCY_KEY_CONFLICT';

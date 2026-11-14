@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { CheckConstraintViolationException, DriverException } from '@mikro-orm/core';
 import type { ArgumentsHost } from '@nestjs/common';
+import { ProviderForbiddenError } from '../../../src/application/errors';
 import { ErrorFilter } from '../../../src/infrastructure/http/error.filter';
 import { JsonLogger } from '../../../src/infrastructure/logging/json-logger';
 
@@ -84,5 +85,11 @@ describe('ErrorFilter on driver errors (S6 review m2, S12 review)', () => {
       expect.objectContaining({ level: 'warn', errorCode: '55P03', errorName: 'DriverException' }),
     ]);
     expect(JSON.stringify(lines)).not.toContain('player-secret-7');
+  });
+
+  test('PROVIDER_FORBIDDEN is 403 (ADR-08)', () => {
+    const { answer } = capture(new ProviderForbiddenError());
+
+    expect(answer).toMatchObject({ status: 403, body: { code: 'PROVIDER_FORBIDDEN' } });
   });
 });

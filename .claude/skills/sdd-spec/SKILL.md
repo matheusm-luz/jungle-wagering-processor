@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 Update the specification for: $ARGUMENTS
 
-1. Re-read the relevant part of the statement (`docs/CHALLENGE.md`, or `README.md` while the statement still lives there). The statement wins over every other document.
+1. Re-read the relevant part of the statement (`docs/CHALLENGE.md`). The statement wins over every other document.
 2. Classify the input:
    - **A requirement the matrix misses or states wrongly.** Add or fix a row in `docs/spec/REQUIREMENTS.md`: next free `R-xx`, source section, type, status `pending`.
    - **An ambiguity or a gap.** Add an `L-xx` row with the question and status `open`. Do not choose an interpretation yourself.

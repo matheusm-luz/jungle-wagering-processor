@@ -185,6 +185,10 @@ describe('SQS consumer: ack after commit (R-52, R-53, R-54)', () => {
       body: JSON.stringify(body),
     });
     expect(response.status).toBe(200);
+    const duplicates = () => app.metricValue('wager_duplicates_total', { channel: 'sqs' });
+    const processed = () =>
+      app.metricValue('wager_transactions_total', { channel: 'sqs', status: 'PROCESSED' });
+    const before = { duplicates: await duplicates(), processed: await processed() };
 
     const messageId = await send({ ...body, idempotencyKey });
     await waitFor(() => inboxRow(messageId));
@@ -194,6 +198,9 @@ describe('SQS consumer: ack after commit (R-52, R-53, R-54)', () => {
     expect(app.logs()).toContainEqual(
       expect.objectContaining({ message: 'sqs message processed', messageId, status: 'PROCESSED' }),
     );
+    // A replay over SQS is a duplicate, not a second transaction (S11 review, m6).
+    expect(await duplicates()).toBe(before.duplicates + 1);
+    expect(await processed()).toBe(before.processed);
   });
 
   test('an INSUFFICIENT_FUNDS rejection is acked, not retried', async () => {

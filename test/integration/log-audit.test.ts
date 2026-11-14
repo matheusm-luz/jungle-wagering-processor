@@ -32,8 +32,10 @@ const AMOUNTS = {
   sqs: '22.29',
   sqsInvalid: '7.777',
   unreadable: '88.89',
+  sqsRetried: '19.73',
+  sqsUnknownWallet: '27.41',
 };
-const BALANCES = ['4248.68', '4215.31', '4248.68', '4226.39'];
+const BALANCES = ['4248.68', '4215.31', '4226.39', '4206.66'];
 const FORBIDDEN_VALUES = [OPENING, ...Object.values(AMOUNTS), ...BALANCES];
 /** Keys of a financial payload: a log line carries counts and identifiers, never these. */
 const FORBIDDEN_KEYS = ['money', 'amount', 'balance', 'initialBalance', 'body', 'payload', 'data'];
@@ -115,7 +117,9 @@ async function statusOf(externalTransactionId: unknown) {
 }
 
 describe('log audit (R-60, statement §12)', () => {
-  test('every path, HTTP, SQS, worker and publisher, logs no amount and no financial payload', async () => {
+  // Not driven here: the publisher's failures, the reconciliation divergence and a failed metric
+  // read. Their lines carry error names and counts only (S11 review, m4).
+  test('the HTTP, SQS, worker and publisher paths it drives log no amount and no financial payload', async () => {
     const opened = await fetch(`${app.url}/wallets`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -188,6 +192,36 @@ describe('log audit (R-60, statement §12)', () => {
     );
     await waitFor(async () => ((await queues.depth(queues.url)) === 0 ? true : undefined));
 
+    // SQS: a message for an unknown wallet, and a transient failure (the wallet held past the lock
+    // timeout) retried until the wallet is released.
+    const stranger2 = { id: newId(), playerId: `player-${newId()}` };
+    await queues.sendRaw(
+      JSON.stringify(
+        wagerMessage(
+          {
+            ...wager(stranger2, 'BET', AMOUNTS.sqsUnknownWallet),
+            idempotencyKey: `${PROVIDER}:${newId()}`,
+          },
+          `msg-${newId()}`,
+        ),
+      ),
+      { groupId: stranger2.id },
+    );
+    const retried = wager(wallet, 'BET', AMOUNTS.sqsRetried);
+    await sql.begin(async (tx) => {
+      await tx`select id from wallets where id = ${wallet.id} for update`;
+      await send(retried);
+      await waitFor(async () =>
+        app.logs().some((line) => line.message === 'sqs message failed, retrying')
+          ? true
+          : undefined,
+      );
+    });
+    await waitFor(async () =>
+      (await statusOf(retried.externalTransactionId)) === 'PROCESSED' ? true : undefined,
+    );
+    await waitFor(async () => ((await queues.depth(queues.url)) === 0 ? true : undefined));
+
     // Publisher: every event of the wallet reaches the topic.
     await waitFor(async () => {
       const [row] = await sql`
@@ -203,6 +237,8 @@ describe('log audit (R-60, statement §12)', () => {
       'http request',
       'sqs message processed',
       'sqs message dead-lettered',
+      'sqs message failed, retrying',
+      'sqs message for an unknown wallet',
       'pending reference retried',
       'outbox batch published',
     ]) {
@@ -217,12 +253,22 @@ describe('log audit (R-60, statement §12)', () => {
       for (const value of FORBIDDEN_VALUES) {
         if (text.includes(value)) throw new Error(`log line carries ${value}: ${text}`);
       }
-      for (const key of FORBIDDEN_KEYS) {
-        if (key in line) throw new Error(`log line has a ${key} field: ${text}`);
-      }
+      const key = forbiddenKey(line);
+      if (key !== undefined) throw new Error(`log line has a ${key} field: ${text}`);
     }
     for (const line of lines.filter((line) => line.message === 'http request')) {
       expect(line.correlationId).toBeString();
     }
   });
 });
+
+/** The first forbidden key at any depth: the logger takes flat fields, but a nested one would hide. */
+function forbiddenKey(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  for (const [key, nested] of Object.entries(value)) {
+    if (FORBIDDEN_KEYS.includes(key)) return key;
+    const found = forbiddenKey(nested);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}

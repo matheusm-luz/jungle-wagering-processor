@@ -216,14 +216,32 @@ describe('transactions by status and processing latency (R-61)', () => {
         referenceExternalTransactionId: bet.externalTransactionId,
       });
       expect(await submit(refund)).toBe(202);
-      // Its BET is sent only once the worker has rescheduled it at least once.
-      await waitFor(async () => ((await retries()) > before.retries ? true : undefined));
+      const [row] = await sql`
+        select id from wager_transactions
+         where external_transaction_id = ${String(refund.externalTransactionId)}`;
+      const refundId = String(row?.id);
+      // Its BET is sent only once the worker has rescheduled this REFUND, not some other row of the
+      // shared database (S11 review, m5).
+      await waitFor(async () => {
+        const [current] = await sql`
+          select reference_attempts from wager_transactions where id = ${refundId}`;
+        return Number(current?.reference_attempts) >= 1 ? true : undefined;
+      });
+      expect(await retries()).toBeGreaterThan(before.retries);
       expect(await submit(bet)).toBe(200);
 
       await waitFor(async () =>
         (await status(String(refund.externalTransactionId))) === 'PROCESSED' ? true : undefined,
       );
       expect(await resolved()).toBeGreaterThanOrEqual(before.resolved + 1);
+      // The PROCESSED counted is this REFUND's: the worker logged its resolution.
+      expect(worker.logs()).toContainEqual(
+        expect.objectContaining({
+          message: 'pending reference retried',
+          transactionId: refundId,
+          outcome: 'PROCESSED',
+        }),
+      );
     } finally {
       await worker.close();
     }
@@ -314,6 +332,16 @@ describe('outbox (R-61)', () => {
 
     expect(await app.metricValue('outbox_lag_seconds')).toBeGreaterThanOrEqual(30);
     expect(await app.metricValue('outbox_pending_messages')).toBeGreaterThanOrEqual(1);
+    await sql`update outbox_messages set published_at = now() where aggregate_id = ${wallet.id}`;
+  });
+
+  test('an event stamped by an instance whose clock runs ahead of the database shows a lag of 0, never negative (S11 review, m2)', async () => {
+    const wallet = await openWallet('100.00');
+    await sql`
+      update outbox_messages set occurred_at = now() + interval '30 seconds'
+       where aggregate_id = ${wallet.id}`;
+
+    expect(await app.metricValue('outbox_lag_seconds')).toBe(0);
     await sql`update outbox_messages set published_at = now() where aggregate_id = ${wallet.id}`;
   });
 

@@ -44,7 +44,11 @@ export async function startApp(overrides: Partial<Env> = {}): Promise<TestApp> {
   };
 }
 
-/** Sums the samples of `name` in a Prometheus text exposition whose labels include `labels`. */
+/**
+ * Sums the samples of `name` in a Prometheus text exposition whose labels include `labels`. A NaN
+ * sample (a gauge whose read failed) throws: `toBe` holds for NaN against NaN, so it would let a
+ * broken gauge pass (S11 review, M1).
+ */
 function sample(text: string, name: string, labels: Record<string, string>): number {
   let total = 0;
   for (const line of text.split('\n')) {
@@ -54,7 +58,9 @@ function sample(text: string, name: string, labels: Record<string, string>): num
       [...(match[2] ?? '').matchAll(/(\w+)="([^"]*)"/g)].map(([, key, value]) => [key, value]),
     );
     if (Object.entries(labels).every(([key, value]) => series[key] === value)) {
-      total += Number(match[3]);
+      const value = Number(match[3]);
+      if (Number.isNaN(value)) throw new Error(`metric ${name} reports NaN: its read failed`);
+      total += value;
     }
   }
   return total;

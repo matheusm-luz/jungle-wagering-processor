@@ -84,7 +84,10 @@ export class BacklogGauges {
       .getConnection()
       .execute<OutboxBacklog[]>(
         `select count(*)::int as pending,
-                coalesce(extract(epoch from now() - min(occurred_at)), 0)::float8 as lag_seconds,
+                -- occurred_at is the instance's clock, now() the database's: a clock ahead would
+                -- read as a negative lag (S11 review, m2).
+                greatest(coalesce(extract(epoch from now() - min(occurred_at)), 0), 0)::float8
+                  as lag_seconds,
                 coalesce(max(attempts), 0)::int as max_attempts
            from outbox_messages
           where published_at is null`,
@@ -102,6 +105,7 @@ export class BacklogGauges {
         new GetQueueUrlCommand({ QueueName: this.env.WAGER_TRANSACTIONS_DLQ_NAME }),
       )
     ).QueueUrl;
+    // The redrive policy's moves land visible; not visible are DLQ messages someone is reading.
     const { Attributes } = await this.sqs.send(
       new GetQueueAttributesCommand({
         QueueUrl: this.dlqUrl,

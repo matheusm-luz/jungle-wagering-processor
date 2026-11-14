@@ -186,19 +186,25 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
     };
     await runWithLogContext(context, async () => {
       try {
-        const result = await this.processWagerTransaction.executeMessage(command, {
-          consumerName: CONSUMER_NAME,
-          messageId,
-        });
+        const timer = this.metrics.processing.startTimer({ channel: 'sqs' });
+        const result = await this.processWagerTransaction
+          .executeMessage(command, { consumerName: CONSUMER_NAME, messageId })
+          .finally(timer);
         if (result === 'duplicate') {
-          this.metrics.increment('sqs_duplicate_messages');
+          this.metrics.duplicates.inc({ channel: 'sqs' });
           this.logger.info('sqs message already processed');
         } else if (result === 'walletNotFound') {
           // L-08: acknowledged with its inbox row; nothing else is persisted.
-          this.metrics.increment('sqs_unknown_wallet_messages');
+          this.metrics.unknownWallet.inc();
           this.logger.warn('sqs message for an unknown wallet');
         } else {
           addLogContext({ transactionId: result.transaction.id });
+          // The same key already sent over HTTP: a replay, not a new transaction (R-52).
+          if (result.idempotentReplay) {
+            this.metrics.duplicates.inc({ channel: 'sqs' });
+          } else {
+            this.metrics.transactions.inc({ channel: 'sqs', status: result.transaction.status });
+          }
           this.logger.info('sqs message processed', { status: result.transaction.status });
         }
         // ADR-09 failpoint: committed, not acknowledged (R-68).
@@ -228,7 +234,7 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
       this.env.SQS_RETRY_BASE_DELAY_S,
       this.env.SQS_RETRY_MAX_DELAY_S,
     );
-    this.metrics.increment('sqs_message_retries');
+    this.metrics.retries.inc({ source: 'sqs' });
     this.logger.warn('sqs message failed, retrying', {
       errorName: errorName(error),
       receiveCount,
@@ -261,7 +267,7 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
       this.logger.error('sqs dead-letter failed', { errorName: errorName(sendError) });
       return;
     }
-    this.metrics.increment('sqs_messages_dead_lettered');
+    this.metrics.deadLettered.inc();
     // Only the error's name and, for a validation error, field paths: never values (R-60).
     this.logger.warn('sqs message dead-lettered', {
       errorName: errorName(error),

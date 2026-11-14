@@ -161,14 +161,16 @@ describe('SQS consumer: ack after commit (R-52, R-53, R-54)', () => {
     const target = await wallet();
     const data = bet(target);
     const messageId = `msg-${newId()}`;
-    const duplicatesBefore = app.metricValue('sqs_duplicate_messages');
+    const duplicatesBefore = await app.metricValue('wager_duplicates_total', { channel: 'sqs' });
 
     // Two broker copies (distinct deduplication ids) of one envelope.
     await send(data, messageId);
     await send(data, messageId);
 
     await waitFor(async () =>
-      app.metricValue('sqs_duplicate_messages') > duplicatesBefore ? true : undefined,
+      (await app.metricValue('wager_duplicates_total', { channel: 'sqs' })) > duplicatesBefore
+        ? true
+        : undefined,
     );
     await drained();
     expect(await walletState(target.id)).toEqual({ balance: '70.00', transactions: 1 });
@@ -183,6 +185,10 @@ describe('SQS consumer: ack after commit (R-52, R-53, R-54)', () => {
       body: JSON.stringify(body),
     });
     expect(response.status).toBe(200);
+    const duplicates = () => app.metricValue('wager_duplicates_total', { channel: 'sqs' });
+    const processed = () =>
+      app.metricValue('wager_transactions_total', { channel: 'sqs', status: 'PROCESSED' });
+    const before = { duplicates: await duplicates(), processed: await processed() };
 
     const messageId = await send({ ...body, idempotencyKey });
     await waitFor(() => inboxRow(messageId));
@@ -192,11 +198,14 @@ describe('SQS consumer: ack after commit (R-52, R-53, R-54)', () => {
     expect(app.logs()).toContainEqual(
       expect.objectContaining({ message: 'sqs message processed', messageId, status: 'PROCESSED' }),
     );
+    // A replay over SQS is a duplicate, not a second transaction (S11 review, m6).
+    expect(await duplicates()).toBe(before.duplicates + 1);
+    expect(await processed()).toBe(before.processed);
   });
 
   test('an INSUFFICIENT_FUNDS rejection is acked, not retried', async () => {
     const target = await wallet('10.00');
-    const retriesBefore = app.metricValue('sqs_message_retries');
+    const retriesBefore = await app.metricValue('retries_total', { source: 'sqs' });
     const data = bet(target);
     const messageId = await send(data);
 
@@ -209,7 +218,7 @@ describe('SQS consumer: ack after commit (R-52, R-53, R-54)', () => {
     expect(transaction).toEqual({ status: 'REJECTED', failure_code: 'INSUFFICIENT_FUNDS' });
     expect(await walletState(target.id)).toEqual({ balance: '10.00', transactions: 1 });
     // Acked on its first receive (S9 review, m2).
-    expect(app.metricValue('sqs_message_retries')).toBe(retriesBefore);
+    expect(await app.metricValue('retries_total', { source: 'sqs' })).toBe(retriesBefore);
   });
 
   test('an occurredAt with a UTC offset instead of Z is accepted (S9 review, m7)', async () => {
@@ -227,7 +236,7 @@ describe('SQS consumer: ack after commit (R-52, R-53, R-54)', () => {
   });
 
   test('a message for an unknown wallet is acked with its inbox row (L-08)', async () => {
-    const before = app.metricValue('sqs_unknown_wallet_messages');
+    const before = await app.metricValue('sqs_unknown_wallet_messages_total');
     const data = bet({ id: newId(), playerId: `player-${newId()}` });
     const messageId = await send(data);
 
@@ -238,7 +247,7 @@ describe('SQS consumer: ack after commit (R-52, R-53, R-54)', () => {
       select count(*)::int as n from wager_transactions
        where external_transaction_id = ${data.externalTransactionId as string}`;
     expect(count).toEqual({ n: 0 });
-    expect(app.metricValue('sqs_unknown_wallet_messages')).toBe(before + 1);
+    expect(await app.metricValue('sqs_unknown_wallet_messages_total')).toBe(before + 1);
   });
 });
 
@@ -246,14 +255,16 @@ describe('SQS consumer: transient failures (R-55)', () => {
   test('a wallet locked past the lock timeout is retried and reaches the DLQ after 5 receives, with no effect', async () => {
     const target = await wallet();
     const release = await holdWallet(target.id);
-    const retriesBefore = app.metricValue('sqs_message_retries');
+    const retriesBefore = await app.metricValue('retries_total', { source: 'sqs' });
     try {
       const messageId = await send(bet(target));
 
       const dead = await deadLettered(messageId);
       // Moved by the redrive policy, not by the consumer: no failure reason attribute.
       expect(failureReason(dead)).toBeUndefined();
-      expect(app.metricValue('sqs_message_retries') - retriesBefore).toBeGreaterThanOrEqual(5);
+      expect(
+        (await app.metricValue('retries_total', { source: 'sqs' })) - retriesBefore,
+      ).toBeGreaterThanOrEqual(5);
       expect(await inboxRow(messageId)).toBeUndefined();
     } finally {
       await release();
@@ -265,11 +276,13 @@ describe('SQS consumer: transient failures (R-55)', () => {
   test('a transient failure that clears is applied once', async () => {
     const target = await wallet();
     const release = await holdWallet(target.id);
-    const retriesBefore = app.metricValue('sqs_message_retries');
+    const retriesBefore = await app.metricValue('retries_total', { source: 'sqs' });
     const messageId = await send(bet(target));
     try {
       await waitFor(async () =>
-        app.metricValue('sqs_message_retries') >= retriesBefore + 2 ? true : undefined,
+        (await app.metricValue('retries_total', { source: 'sqs' })) >= retriesBefore + 2
+          ? true
+          : undefined,
       );
     } finally {
       await release();
@@ -332,23 +345,23 @@ describe('SQS consumer: visibility backoff (R-55, S9 review m4)', () => {
 
 describe('SQS consumer: permanent failures go to the DLQ at once (R-55)', () => {
   test('a message that is not JSON goes to the DLQ on its first receive', async () => {
-    const retriesBefore = app.metricValue('sqs_message_retries');
+    const retriesBefore = await app.metricValue('retries_total', { source: 'sqs' });
     const body = `not json ${newId()}`;
     await queues.sendRaw(body, { groupId: `raw-${newId()}` });
 
     const dead = await deadLettered(body);
     expect(failureReason(dead)).toBe('RequestValidationError');
-    expect(app.metricValue('sqs_message_retries')).toBe(retriesBefore);
+    expect(await app.metricValue('retries_total', { source: 'sqs' })).toBe(retriesBefore);
   });
 
   test('an invalid payload goes to the DLQ on its first receive', async () => {
     const target = await wallet();
-    const retriesBefore = app.metricValue('sqs_message_retries');
+    const retriesBefore = await app.metricValue('retries_total', { source: 'sqs' });
     const messageId = await send(bet(target, '30.00', { bonus: 'unknown field' }));
 
     const dead = await deadLettered(messageId);
     expect(failureReason(dead)).toBe('RequestValidationError');
-    expect(app.metricValue('sqs_message_retries')).toBe(retriesBefore);
+    expect(await app.metricValue('retries_total', { source: 'sqs' })).toBe(retriesBefore);
     expect(await walletState(target.id)).toEqual({ balance: '100.00', transactions: 0 });
   });
 

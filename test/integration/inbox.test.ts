@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import type { MikroORM } from '@mikro-orm/postgresql';
 import type { SQL } from 'bun';
 import type { InboxRecord } from '../../src/application/ports';
+import { Metrics } from '../../src/infrastructure/metrics/metrics';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { migratedDatabase } from '../support/database';
 import { expectLedgerInvariant } from '../support/ledger-invariant';
@@ -15,7 +16,7 @@ let unitOfWork: MikroOrmUnitOfWork;
 beforeAll(async () => {
   sql = await migratedDatabase();
   orm = await startOrm();
-  unitOfWork = new MikroOrmUnitOfWork(orm, { newId });
+  unitOfWork = new MikroOrmUnitOfWork(orm, { newId }, new Metrics());
 });
 
 afterAll(async () => {

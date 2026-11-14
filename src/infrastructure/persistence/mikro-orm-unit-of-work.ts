@@ -11,6 +11,7 @@ import { ID_GENERATOR } from '../../application/tokens';
 import { LedgerAccountKind, type LedgerCounterparty } from '../../domain/ledger-account';
 import { OutboxMessage } from '../../domain/outbox-message';
 import { WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager-transaction';
+import { Metrics } from '../metrics/metrics';
 import {
   toLedgerEntryRecord,
   toOutboxMessageRecord,
@@ -59,12 +60,16 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
   constructor(
     private readonly orm: MikroORM,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
+    private readonly metrics: Metrics,
   ) {}
 
   async run<T>(work: (scope: TransactionScope) => Promise<T>): Promise<T> {
     try {
       return await this.orm.em.fork().transactional((em) => work(this.scope(em)));
     } catch (error) {
+      // `lock_timeout` (ADR-01): a lock, of a wallet or of a row being inserted, waited too long.
+      if ((error as { code?: unknown } | undefined)?.code === '55P03')
+        this.metrics.lockConflicts.inc();
       throw translate(error);
     }
   }
@@ -91,10 +96,12 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
           await em.insert(WalletRecord, toWalletRecord(wallet));
         },
         lock: async (walletId) => {
-          const row = await em.findOne(WalletRecord, walletId, {
-            lockMode: LockMode.PESSIMISTIC_WRITE,
-            disableIdentityMap: true,
-          });
+          const row = await em
+            .findOne(WalletRecord, walletId, {
+              lockMode: LockMode.PESSIMISTIC_WRITE,
+              disableIdentityMap: true,
+            })
+            .finally(this.metrics.lockWait.startTimer());
           return row === null ? undefined : toWallet(row);
         },
         update: async (wallet, expectedVersion) => {

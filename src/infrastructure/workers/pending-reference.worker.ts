@@ -10,6 +10,7 @@ import type { Env } from '../../config/env';
 import { ENV } from '../../config/env.token';
 import { JsonLogger } from '../logging/json-logger';
 import { type LogContext, runWithLogContext } from '../logging/log-context';
+import { Metrics } from '../metrics/metrics';
 
 /**
  * Runs `ResolvePendingReferences` in every instance (ADR-05): one poll per interval, or at once
@@ -27,6 +28,7 @@ export class PendingReferenceWorker implements OnApplicationBootstrap, BeforeApp
     private readonly resolver: ResolvePendingReferences,
     @Inject(ENV) private readonly env: Env,
     private readonly logger: JsonLogger,
+    private readonly metrics: Metrics,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -79,6 +81,11 @@ export class PendingReferenceWorker implements OnApplicationBootstrap, BeforeApp
         try {
           const outcome = await this.resolver.retry(row);
           progressed = true;
+          if (outcome === 'rescheduled') {
+            this.metrics.retries.inc({ source: 'pending_reference' });
+          } else if (outcome !== 'skipped') {
+            this.metrics.transactions.inc({ channel: 'worker', status: outcome });
+          }
           if (outcome !== 'skipped') this.logger.info('pending reference retried', { outcome });
         } catch (error) {
           this.logger.error('pending reference retry failed', { errorName: errorName(error) });

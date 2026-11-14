@@ -101,7 +101,7 @@ export class WalletsController {
     addLogContext({ walletId: id });
     const result = await this.reconcileWallet.execute(id);
     if (!result.consistent) {
-      this.metrics.increment(RECONCILIATION_DIVERGENCES);
+      this.metrics.reconciliationDivergences.inc();
       // No amounts in logs: the response carries them.
       this.logger.error('wallet reconciliation divergence', {
         walletId: id,
@@ -111,8 +111,6 @@ export class WalletsController {
     return result;
   }
 }
-
-export const RECONCILIATION_DIVERGENCES = 'wallet_reconciliation_divergences_total';
 
 /** Default 50 as in statement §9; at most 200 so one request stays one cheap index range. */
 const ledgerQuerySchema = z.strictObject({

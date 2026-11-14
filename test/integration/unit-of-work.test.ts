@@ -18,6 +18,7 @@ import {
   WagerTransactionStatus,
 } from '../../src/domain/wager-transaction';
 import { Wallet } from '../../src/domain/wallet';
+import { Metrics } from '../../src/infrastructure/metrics/metrics';
 import { buildOrmConfig } from '../../src/infrastructure/persistence/mikro-orm.config';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { migratedDatabase, silentLogger, testEnv } from '../support/database';
@@ -38,7 +39,7 @@ let unitOfWork: MikroOrmUnitOfWork;
 beforeAll(async () => {
   sql = await migratedDatabase();
   orm = await startOrm();
-  unitOfWork = new MikroOrmUnitOfWork(orm, { newId });
+  unitOfWork = new MikroOrmUnitOfWork(orm, { newId }, new Metrics());
 });
 
 afterAll(async () => {
@@ -602,7 +603,7 @@ describe('idle in transaction timeout (S10 review, m1)', () => {
     });
     try {
       // Stands for a client that vanished with the lock held: it never sends another statement.
-      const abandoned = new MikroOrmUnitOfWork(shortOrm, { newId })
+      const abandoned = new MikroOrmUnitOfWork(shortOrm, { newId }, new Metrics())
         .run(async (scope) => {
           await scope.wallets.lock(wallet.id as string);
           locked();
@@ -630,7 +631,7 @@ describe('lock timeout (ADR-01, docs/tasks/S9.md Q2)', () => {
     const shortOrm = await MikroORM.init(
       buildOrmConfig({ ...testEnv, DATABASE_LOCK_TIMEOUT_MS: 200 }, silentLogger),
     );
-    const waiting = new MikroOrmUnitOfWork(shortOrm, { newId });
+    const waiting = new MikroOrmUnitOfWork(shortOrm, { newId }, new Metrics());
     const { wallet } = await seedWallet(sql, '10.00');
     let release = () => {};
     const held = new Promise<void>((resolve) => {

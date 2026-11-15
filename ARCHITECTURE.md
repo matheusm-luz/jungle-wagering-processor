@@ -25,7 +25,7 @@ flowchart LR
 | Layer | Contains | May import |
 | --- | --- | --- |
 | Domain | `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry`, `OutboxMessage`, integration events, failure codes, domain errors | Nothing outside the domain, except `decimal.js` inside `Money` |
-| Application | Use cases and ports (repositories, clock, id generator, event publisher, provider identity) | Domain |
+| Application | Use cases and ports (`UnitOfWork` and its `TransactionScope`, `WalletQueries`, `Clock`, `IdGenerator`, `ProviderIdentityPort`) | Domain |
 | Infrastructure | MikroORM records and mappers, migrations, SQS and SNS adapters, HTTP controllers, workers, logging, metrics | Application and domain |
 
 A port exists only where it protects a boundary: persistence, the broker, time, identity.
@@ -45,6 +45,37 @@ Every balance change runs this sequence inside one `em.transactional()` call, at
 9. Apply the movement on the `Wallet` aggregate, producing the new balance, the new version and one ledger entry. Insufficient balance → `REJECTED`.
 10. Persist the transaction with the observed balance, the ledger entry, the wallet row and the outbox events.
 11. `COMMIT`. Only then: HTTP response, or `DeleteMessage` on SQS.
+
+The same sequence as a flowchart. Every path that reaches a `REJECTED`, `PENDING_REFERENCE` or `PROCESSED` box commits a transaction row; the 400, 404 and 409 paths commit nothing.
+
+```mermaid
+flowchart TD
+  IN["Request over HTTP<br/>or message from SQS"] --> V{"1. Valid payload?<br/>shape, Money, kind, reference"}
+  V -- no --> R400["400, nothing persisted<br/>(SQS: copy to the DLQ)"]
+  V -- yes --> H["2. payloadHash<br/>HTTP: ProviderIdentityPort"]
+  H --> B["3. BEGIN"]
+  B --> IB{"4. SQS only:<br/>inbox row new?"}
+  IB -- "duplicate" --> ACK0["COMMIT, ack, no effect"]
+  IB -- "new, or HTTP" --> L["5. SELECT wallet FOR UPDATE"]
+  L -- "unknown wallet" --> R404["404 (SQS: ack with the inbox row)"]
+  L --> K{"6. Same idempotency key<br/>already stored?"}
+  K -- "same hash" --> REP["Replay of the stored result<br/>idempotentReplay: true"]
+  K -- "other hash, or same<br/>provider + external id" --> R409["409, ROLLBACK"]
+  K -- no --> O{"7. Wallet of the player,<br/>same currency?"}
+  O -- no --> REJ["REJECTED with failureCode<br/>balance and ledger untouched"]
+  O -- yes --> REF{"8. Reference declared?"}
+  REF -- "declared, not found<br/>or still waiting" --> PEND["PENDING_REFERENCE<br/>retried by the worker"]
+  REF -- "found, rule broken" --> REJ
+  REF -- "found and PROCESSED,<br/>or none" --> AP{"9. Wallet.debit / credit"}
+  AP -- "insufficient funds,<br/>would overdraw" --> REJ
+  AP -- "LOSS: no movement" --> P
+  AP -- "entry produced" --> P["10. Persist: transaction, ledger entry,<br/>wallet (version + 1), outbox events"]
+  REJ --> P
+  PEND --> P
+  P --> C["11. COMMIT"]
+  C --> OUT["HTTP: 200 / 202 / 422<br/>SQS: DeleteMessage"]
+  C -. later, by any instance .-> PUB["Outbox publisher:<br/>FOR UPDATE SKIP LOCKED, then PublishBatch"]
+```
 
 ### Why this order
 
@@ -176,6 +207,7 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 ### ADR-13 — ORM and migrations (accepted)
 
 - **Decision.** MikroORM 7, the statement's preferred option: explicit Unit of Work, `em.transactional()` and `LockMode`. Migrations are hand-written SQL classes with `up` and `down`, registered in a static list and run through the Migrator API.
+- **How the ORM is used.** The statement prefers MikroORM for its explicit Unit of Work and Identity Map. This service takes the transaction (`em.transactional()`), the lock modes (`PESSIMISTIC_WRITE` on the wallet; `PESSIMISTIC_PARTIAL_WRITE`, that is `FOR UPDATE SKIP LOCKED`, in the publisher), the entity definitions (`defineEntity`, no decorators) and the Migrator, and deliberately not the change tracking: every write is a native statement (`em.insert`, `em.nativeUpdate`) sent before the call returns, and reads skip the identity map (`disableIdentityMap: true`). Three reasons. The order of the statements is the foreign-key order of the writes, so nothing depends on how a flush would sort a change set. A constraint violation surfaces on the statement that caused it, which is what lets the unit of work name the constraint and answer 409 (ADR-03). And no cached entity can be read outside the wallet lock: every read inside the transaction goes to the database and sees what the previous lock holder committed (§2). What is given up is the convenience of mutating a managed entity and flushing; the domain objects are not entities anyway (ADR-10), so there was nothing to track.
 - **Consequences.** The schema contains partial indexes, `CHECK` constraints and triggers that a generator would not produce, so hand-written SQL is the honest representation. Running migrations programmatically avoids the MikroORM CLI, whose TypeScript loaders do not include Bun. Each use case execution, queue message and worker iteration runs on its own forked `EntityManager`, so no identity map is shared across concurrent work.
 
 ### ADR-14 — Metrics (accepted, S11)
@@ -256,8 +288,9 @@ Money columns are `NUMERIC(19,2)` next to a `CHAR(3)` currency. The pending-refe
 | L-18 | `REFUND` and `ROLLBACK` require a reference; `WIN` and `LOSS` accept one; `BET` and `OPENING` refuse one. A transaction cannot reference itself. Violations are invalid requests, not persisted rejections. |
 | L-19 | `POST /wallets` has no idempotency key (statement §9): a resend after a lost 201 is 409 `WALLET_ALREADY_EXISTS`, without the wallet id, because answering with it would turn the conflict into a lookup by player for any caller while there is no authentication. A lookup by player and currency is the additive fix. |
 | L-20 | The HTTP answer to `WALLET_PLAYER_MISMATCH` carries no `balance`: without authentication it would reveal another player's balance. The row and the internal event keep it. |
+| L-21 | The inbox of statement §6.5 is a table, not a domain class. `InboxMessage` would model a message received and not yet processed, but that state never exists here: the inbox row is the first write of the transaction that applies the message (§2 step 4), so `received_at` and `processed_at` are written together, and the row commits exactly with the effects or not at all. A class with `receive`, `isProcessed` and `markProcessed` would have no transition to protect. What the statement asks of the inbox, deduplication by `(consumerName, messageId)` in the same SQL transaction, is held by the primary key and by `TransactionScope.inbox.record`, which also detects the same id with another payload (`InboxMessageConflictError`, dead-lettered). |
 
-Every interpretation is accepted (L-04, L-05, L-11, L-12 and L-19 on 14 Nov, S13 Q2); the question behind each is in [docs/spec/REQUIREMENTS.md](docs/spec/REQUIREMENTS.md) §3.
+Every interpretation is accepted (L-04, L-05, L-11, L-12 and L-19 on 14 Nov, S13 Q2; L-21 on 14 Nov, after the audit); the question behind each is in [docs/spec/REQUIREMENTS.md](docs/spec/REQUIREMENTS.md) §3.
 
 ## 8. Authentication design (not implemented)
 
@@ -283,4 +316,7 @@ Every interpretation is accepted (L-04, L-05, L-11, L-12 and L-19 on 14 Nov, S13
 - A consumer that dies (or is killed) while its long poll is open can leave a message the broker handed to that poll invisible for one visibility timeout (30 s) before another instance gets it. Delayed, never lost; a graceful `SIGTERM` avoids it.
 - `ApproximateReceiveCount` is the broker's: a message whose processing outlives its visibility timeout is received again and counts a receive even though the first attempt is still running. The inbox keeps it to one effect; it can reach the DLQ sooner than five real failures.
 - The emulator image is frozen and differs from AWS in timing details.
-- Metrics are per process and lost on restart (ADR-14); a scrape that finds SQS slow waits for it, bounded only by the scraper's timeout (the PostgreSQL read is bounded by the statement timeout). `/metrics` is open like the health checks: it carries counts and durations, no amounts.
+- Metrics are per process and lost on restart (ADR-14). Each scrape reads the outbox and the DLQ depth, bounded by the statement timeout and by `READINESS_TIMEOUT_MS`; a gauge whose read fails or times out reports `NaN`. `/metrics` is open like the health checks: it carries counts and durations, no amounts.
+- The database role the application connects with (`wagering` in Compose) owns the schema and is a superuser: the triggers that make the ledger and the terminal transactions immutable protect against wrong application code, not against that role, which could disable them. In production the application would connect as a role with `INSERT`, `SELECT` and `UPDATE` on the tables it writes and no `TRIGGER` or `TRUNCATE` privilege; the migrations would run as the owner.
+- Nothing removes published `outbox_messages` or old `inbox_messages`; both tables grow with the traffic. A retention job (delete published rows older than the broker's deduplication window, inbox rows older than the queue's retention) is the additive fix; the partial index on `published_at is null` keeps the publisher's scan cheap meanwhile.
+- The connection pool of each instance is the driver's default size and is not configurable; the lock and statement timeouts bound how long a connection can be held, and an exhausted pool is answered 503 (S12), but the size itself is not tuned to the number of consumer loops and workers.

@@ -179,6 +179,34 @@ describe('ProcessWagerTransaction.executeMessage (ARCHITECTURE §2 step 4)', () 
     return state;
   };
 
+  test('every event of a message carries the message id as causationId; events of an HTTP request carry none (statement §11)', async () => {
+    const useCase = new ProcessWagerTransaction(
+      new MikroOrmUnitOfWork(orm, { newId }, new Metrics()),
+      { now: () => new Date() },
+      { newId },
+      ANY_PROVIDER,
+    );
+    const message = inbox();
+    const viaQueue = await bet();
+    const viaHttp = await bet();
+
+    await useCase.executeMessage(viaQueue.command, message);
+    await useCase.execute(viaHttp.command);
+
+    // The seeded wallet has no outbox rows: every row of the aggregate comes from the bet.
+    const causation = (walletId: string) =>
+      sql`select event_type, payload ->> 'causationId' as causation_id from outbox_messages
+           where aggregate_id = ${walletId} order by event_type`;
+    expect(await causation(viaQueue.walletId)).toEqual([
+      { event_type: 'WagerTransactionProcessed', causation_id: message.messageId },
+      { event_type: 'WalletBalanceChanged', causation_id: message.messageId },
+    ]);
+    expect(await causation(viaHttp.walletId)).toEqual([
+      { event_type: 'WagerTransactionProcessed', causation_id: null },
+      { event_type: 'WalletBalanceChanged', causation_id: null },
+    ]);
+  });
+
   test('a message is applied once with its inbox row; the same message again is a duplicate with no second effect', async () => {
     const useCase = new ProcessWagerTransaction(
       new MikroOrmUnitOfWork(orm, { newId }, new Metrics()),

@@ -36,6 +36,12 @@ docker compose up -d --build --wait
 
 Isso sobe o PostgreSQL, o LocalStack (cujo script de init cria as filas, a DLQ, o tópico SNS FIFO e a fila assinante), um container `migrate` de execução única que aplica as migrations, e uma instância da aplicação. `--wait` retorna quando todos os serviços estão saudáveis.
 
+O PostgreSQL e o LocalStack são publicados nas portas 5432 e 4566 do host. Se alguma estiver ocupada (`Bind for 0.0.0.0:5432 failed: port is already allocated`), escolha outras; tudo dentro do Compose, inclusive as suítes de teste, continua falando com os containers diretamente (só uma execução no host, `bun run start`, precisa das novas portas no seu `.env`):
+
+```bash
+POSTGRES_HOST_PORT=5433 LOCALSTACK_HOST_PORT=4567 docker compose up -d --build --wait
+```
+
 A instância publica a porta 3000 na primeira porta livre do host entre 3000 e 3002. Para descobri-la:
 
 ```bash

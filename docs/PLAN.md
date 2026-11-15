@@ -48,6 +48,6 @@ Core slices add up to 22h; with double-entry (transfer-row model) 23.5h. Budget:
 
 ## How slices are executed
 
-Each slice goes through `/sdd-tasks <slice>` (optional review of the checklist in `docs/tasks/`) and `/sdd-implement <slice>`. `/verify` runs the checks, `/review-slice` gives an independent review on the risky slices (S4, S6, S7, S9, S10), and `/sdd-analyze` audits the whole repository before the freeze, as part of S13.
+Each slice had a task checklist in `docs/tasks/` and one commit through a pull request. The checks of the README (`typecheck`, `lint`, `test:unit`, `test:integration`, `test:concurrency`) ran after every change, an independent review was done on the risky slices (S4, S6, S7, S9, S10), and an independent audit of the whole repository was done on 14 Nov, after S13 (the "audit" rows of `docs/PROGRESS.md`).
 
-One harness item is left for after S0, because it needs the scripts to exist: an aggregate `bun run check` script, and optionally a `Stop` hook that runs it. A hook committed in `.claude/settings.json` also runs for anyone who opens the repository with Claude Code, so Matheus decides whether it is committed or kept in the personal settings file.
+The assistant's working agreement and command files that drove this workflow were removed from the repository at the freeze (14 Nov); the documents they wrote to (`ARCHITECTURE.md`, this plan, the matrix, `docs/PROGRESS.md`, `docs/tasks/`) stay.

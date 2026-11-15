@@ -124,9 +124,11 @@ export class ProcessWagerTransaction {
       // Read after the lock: a request that waited must not stamp its movement and events earlier
       // than the holder it waited for, or times would run against the wallet version (S4 review, m1).
       const at = this.clock.now();
+      // Over SQS the message is the cause of every event of this request (statement §11).
       const context = (): EventContext => ({
         eventId: this.ids.newId(),
         correlationId,
+        causationId: message?.messageId,
         occurredAt: at,
       });
 

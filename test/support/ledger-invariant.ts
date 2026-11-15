@@ -107,7 +107,7 @@ export async function findLedgerProblems(sql: SQL): Promise<LedgerProblem[]> {
   `;
 }
 
-/** Final assertion of every integration and concurrency test (CLAUDE.md, invariant 7). */
+/** Final assertion of every integration and concurrency test (statement §13, R-72). */
 export async function expectLedgerInvariant(sql: SQL): Promise<void> {
   expect(await findLedgerProblems(sql)).toEqual([]);
 }

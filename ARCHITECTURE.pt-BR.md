@@ -27,7 +27,7 @@ flowchart LR
 | Camada | Contém | Pode importar |
 | --- | --- | --- |
 | Domínio | `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry`, `OutboxMessage`, eventos de integração, códigos de falha, erros de domínio | Nada fora do domínio, exceto `decimal.js` dentro de `Money` |
-| Aplicação | Casos de uso e portas (repositórios, relógio, gerador de ids, publicador de eventos, identidade do provedor) | Domínio |
+| Aplicação | Casos de uso e portas (`UnitOfWork` e seu `TransactionScope`, `WalletQueries`, `Clock`, `IdGenerator`, `ProviderIdentityPort`) | Domínio |
 | Infraestrutura | Records e mappers do MikroORM, migrations, adaptadores SQS e SNS, controllers HTTP, workers, logs, métricas | Aplicação e domínio |
 
 Uma porta só existe onde protege uma fronteira: persistência, broker, tempo, identidade.
@@ -47,6 +47,37 @@ Toda mudança de saldo executa esta sequência dentro de uma única chamada `em.
 9. Aplicar o movimento no agregado `Wallet`, produzindo o novo saldo, a nova versão e um lançamento no ledger. Saldo insuficiente → `REJECTED`.
 10. Persistir a transação com o saldo observado, o lançamento, a linha da wallet e os eventos do outbox.
 11. `COMMIT`. Só então: resposta HTTP, ou `DeleteMessage` no SQS.
+
+A mesma sequência como fluxograma. Todo caminho que chega a uma caixa `REJECTED`, `PENDING_REFERENCE` ou `PROCESSED` commita uma linha de transação; os caminhos 400, 404 e 409 não commitam nada.
+
+```mermaid
+flowchart TD
+  IN["Requisição HTTP<br/>ou mensagem do SQS"] --> V{"1. Payload válido?<br/>forma, Money, kind, referência"}
+  V -- não --> R400["400, nada persistido<br/>(SQS: cópia para a DLQ)"]
+  V -- sim --> H["2. payloadHash<br/>HTTP: ProviderIdentityPort"]
+  H --> B["3. BEGIN"]
+  B --> IB{"4. Só SQS:<br/>linha do inbox é nova?"}
+  IB -- "duplicata" --> ACK0["COMMIT, ack, sem efeito"]
+  IB -- "nova, ou HTTP" --> L["5. SELECT wallet FOR UPDATE"]
+  L -- "wallet desconhecida" --> R404["404 (SQS: ack com a linha do inbox)"]
+  L --> K{"6. Mesma chave de idempotência<br/>já gravada?"}
+  K -- "mesmo hash" --> REP["Replay do resultado gravado<br/>idempotentReplay: true"]
+  K -- "outro hash, ou mesmo<br/>provedor + id externo" --> R409["409, ROLLBACK"]
+  K -- não --> O{"7. Wallet do jogador,<br/>mesma moeda?"}
+  O -- não --> REJ["REJECTED com failureCode<br/>saldo e ledger intactos"]
+  O -- sim --> REF{"8. Referência declarada?"}
+  REF -- "declarada, não encontrada<br/>ou ainda esperando" --> PEND["PENDING_REFERENCE<br/>retentada pelo worker"]
+  REF -- "encontrada, regra violada" --> REJ
+  REF -- "encontrada e PROCESSED,<br/>ou nenhuma" --> AP{"9. Wallet.debit / credit"}
+  AP -- "saldo insuficiente,<br/>negativaria" --> REJ
+  AP -- "LOSS: sem movimento" --> P
+  AP -- "lançamento produzido" --> P["10. Persistir: transação, lançamento,<br/>wallet (version + 1), eventos do outbox"]
+  REJ --> P
+  PEND --> P
+  P --> C["11. COMMIT"]
+  C --> OUT["HTTP: 200 / 202 / 422<br/>SQS: DeleteMessage"]
+  C -. depois, por qualquer instância .-> PUB["Publisher do outbox:<br/>FOR UPDATE SKIP LOCKED, depois PublishBatch"]
+```
 
 ### Por que esta ordem
 
@@ -178,6 +209,7 @@ As colunas de dinheiro são `NUMERIC(19,2)` ao lado de uma moeda `CHAR(3)`. O wo
 ### ADR-13 — ORM e migrations (aceito)
 
 - **Decisão.** MikroORM 7, a opção preferencial do enunciado: Unit of Work explícito, `em.transactional()` e `LockMode`. As migrations são classes de SQL escritas à mão com `up` e `down`, registradas numa lista estática e executadas pela API do Migrator.
+- **Como o ORM é usado.** O enunciado prefere o MikroORM pelo Unit of Work e pelo Identity Map explícitos. Este serviço usa a transação (`em.transactional()`), os modos de lock (`PESSIMISTIC_WRITE` na wallet; `PESSIMISTIC_PARTIAL_WRITE`, isto é `FOR UPDATE SKIP LOCKED`, no publisher), as definições de entidade (`defineEntity`, sem decorators) e o Migrator, e deliberadamente não o change tracking: toda escrita é um statement nativo (`em.insert`, `em.nativeUpdate`) enviado antes de a chamada retornar, e as leituras ignoram o identity map (`disableIdentityMap: true`). Três razões. A ordem dos statements é a ordem das chaves estrangeiras das escritas, então nada depende de como um flush ordenaria um change set. Uma violação de constraint aparece no statement que a causou, que é o que permite à unit of work reconhecer a constraint pelo nome e responder 409 (ADR-03). E nenhuma entidade em cache pode ser lida fora do lock da wallet: toda leitura dentro da transação vai ao banco e enxerga o que o detentor anterior do lock commitou (§2). O que se abre mão é a conveniência de mudar uma entidade gerenciada e dar flush; os objetos de domínio não são entidades de qualquer forma (ADR-10), então não havia o que rastrear.
 - **Consequências.** O schema tem índices parciais, constraints `CHECK` e triggers que um gerador não produziria, então SQL escrito à mão é a representação honesta. Rodar as migrations programaticamente evita a CLI do MikroORM, cujos loaders de TypeScript não incluem o Bun. Cada execução de caso de uso, mensagem da fila e iteração de worker roda no seu próprio `EntityManager` (fork), então nenhum identity map é compartilhado entre trabalhos concorrentes.
 
 ### ADR-14 — Métricas (aceito, S11)
@@ -258,8 +290,9 @@ As colunas de dinheiro são `NUMERIC(19,2)` ao lado de uma moeda `CHAR(3)`. O wo
 | L-18 | `REFUND` e `ROLLBACK` exigem referência; `WIN` e `LOSS` aceitam uma; `BET` e `OPENING` a recusam. Uma transação não pode referenciar a si mesma. As violações são requisições inválidas, não rejeições persistidas. |
 | L-19 | `POST /wallets` não tem chave de idempotência (enunciado §9): um reenvio depois de um 201 perdido é 409 `WALLET_ALREADY_EXISTS`, sem o id da wallet, porque respondê-lo transformaria o conflito numa busca por jogador para qualquer chamador enquanto não há autenticação. Uma busca por jogador e moeda é a correção aditiva. |
 | L-20 | A resposta HTTP a `WALLET_PLAYER_MISMATCH` não traz `balance`: sem autenticação ela revelaria o saldo de outro jogador. A linha e o evento interno o mantêm. |
+| L-21 | O inbox do enunciado §6.5 é uma tabela, não uma classe de domínio. `InboxMessage` modelaria uma mensagem recebida e ainda não processada, mas esse estado nunca existe aqui: a linha do inbox é a primeira escrita da transação que aplica a mensagem (§2 passo 4), então `received_at` e `processed_at` são gravados juntos, e a linha commita exatamente com os efeitos ou não commita. Uma classe com `receive`, `isProcessed` e `markProcessed` não teria transição para proteger. O que o enunciado pede do inbox, deduplicação por `(consumerName, messageId)` na mesma transação SQL, é garantido pela chave primária e por `TransactionScope.inbox.record`, que também detecta o mesmo id com outro payload (`InboxMessageConflictError`, enviado à DLQ). |
 
-Todas as interpretações estão aceitas (L-04, L-05, L-11, L-12 e L-19 em 14 nov., S13 Q2); a pergunta por trás de cada uma está em [docs/spec/REQUIREMENTS.md](docs/spec/REQUIREMENTS.md) §3.
+Todas as interpretações estão aceitas (L-04, L-05, L-11, L-12 e L-19 em 14 nov., S13 Q2; L-21 em 14 nov., depois da auditoria); a pergunta por trás de cada uma está em [docs/spec/REQUIREMENTS.md](docs/spec/REQUIREMENTS.md) §3.
 
 ## 8. Desenho de autenticação (não implementado)
 
@@ -285,4 +318,7 @@ Todas as interpretações estão aceitas (L-04, L-05, L-11, L-12 e L-19 em 14 no
 - Um consumer que morre (ou é morto) com o long poll aberto pode deixar uma mensagem que o broker entregou a esse poll invisível por um visibility timeout (30 s) antes de outra instância recebê-la. Atrasada, nunca perdida; um `SIGTERM` gracioso evita isso.
 - `ApproximateReceiveCount` é do broker: uma mensagem cujo processamento dura mais que o visibility timeout é recebida de novo e conta um recebimento mesmo com a primeira tentativa ainda em andamento. O inbox a mantém em um único efeito; ela pode chegar à DLQ antes de cinco falhas reais.
 - A imagem do emulador está congelada e difere da AWS em detalhes de tempo.
-- As métricas são por processo e se perdem no reinício (ADR-14); um scrape que encontra o SQS lento espera por ele, limitado só pelo timeout do scraper (a leitura do PostgreSQL é limitada pelo statement timeout). `/metrics` é aberto como os health checks: traz contagens e durações, nenhum valor monetário.
+- As métricas são por processo e se perdem no reinício (ADR-14). Cada scrape lê o outbox e a profundidade da DLQ, limitado pelo statement timeout e por `READINESS_TIMEOUT_MS`; um gauge cuja leitura falha ou estoura o tempo reporta `NaN`. `/metrics` é aberto como os health checks: traz contagens e durações, nenhum valor monetário.
+- O papel de banco com que a aplicação se conecta (`wagering` no Compose) é dono do schema e superusuário: os triggers que tornam o ledger e as transações terminais imutáveis protegem contra código errado da aplicação, não contra esse papel, que poderia desligá-los. Em produção a aplicação se conectaria com um papel com `INSERT`, `SELECT` e `UPDATE` nas tabelas que escreve e sem privilégio `TRIGGER` ou `TRUNCATE`; as migrations rodariam como o dono.
+- Nada remove `outbox_messages` publicadas nem `inbox_messages` antigas; as duas tabelas crescem com o tráfego. Um job de retenção (apagar linhas publicadas mais antigas que a janela de deduplicação do broker, e linhas do inbox mais antigas que a retenção da fila) é a correção aditiva; o índice parcial em `published_at is null` mantém barata a varredura do publisher enquanto isso.
+- O pool de conexões de cada instância tem o tamanho padrão do driver e não é configurável; os timeouts de lock e de statement limitam por quanto tempo uma conexão pode ficar presa, e um pool esgotado é respondido com 503 (S12), mas o tamanho em si não é ajustado ao número de loops do consumer e de workers.

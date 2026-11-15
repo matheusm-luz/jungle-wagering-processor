@@ -31,13 +31,13 @@ const Kind = WagerTransactionKind;
 const Status = WagerTransactionStatus;
 
 /** The kinds a provider may submit, over HTTP or the queue. `OPENING` is not one of them. */
-export const SUBMITTABLE_KINDS: readonly WagerTransactionKind[] = [
+export const SUBMITTABLE_KINDS = [
   Kind.Bet,
   Kind.Win,
   Kind.Loss,
   Kind.Refund,
   Kind.Rollback,
-];
+] as const satisfies readonly WagerTransactionKind[];
 
 /** The kinds that cannot exist without `referenceExternalTransactionId` (statement §7.1). */
 const REQUIRES_REFERENCE: readonly WagerTransactionKind[] = [Kind.Refund, Kind.Rollback];

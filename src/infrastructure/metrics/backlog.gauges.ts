@@ -19,9 +19,8 @@ interface OutboxBacklog {
  * policy's moves, which no counter of a running instance can. Every instance reads the same
  * database and queue, so a scraper takes their maximum, not their sum. A read that fails reports
  * NaN, never a stale value.
- * The PostgreSQL read is bounded by `DATABASE_STATEMENT_TIMEOUT_MS`.
- * shortcut: the SQS read waits as long as SQS takes to answer; the scraper's own timeout bounds it.
- * Bound it here, as the readiness probes are, if a slow SQS ever stalls scrapes.
+ * The PostgreSQL read is bounded by `DATABASE_STATEMENT_TIMEOUT_MS`; the SQS read by
+ * `READINESS_TIMEOUT_MS`, like the readiness probes, so a slow SQS cannot stall a scrape.
  */
 @Injectable()
 export class BacklogGauges {
@@ -101,9 +100,11 @@ export class BacklogGauges {
   }
 
   private async dlqDepth(): Promise<number> {
+    const abortSignal = AbortSignal.timeout(this.env.READINESS_TIMEOUT_MS);
     this.dlqUrl ??= (
       await this.sqs.send(
         new GetQueueUrlCommand({ QueueName: this.env.WAGER_TRANSACTIONS_DLQ_NAME }),
+        { abortSignal },
       )
     ).QueueUrl;
     // The redrive policy's moves land visible; not visible are DLQ messages someone is reading.
@@ -112,6 +113,7 @@ export class BacklogGauges {
         QueueUrl: this.dlqUrl,
         AttributeNames: ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'],
       }),
+      { abortSignal },
     );
     return (
       Number(Attributes?.ApproximateNumberOfMessages ?? Number.NaN) +
